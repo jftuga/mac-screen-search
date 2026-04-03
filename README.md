@@ -6,6 +6,10 @@ A macOS CLI tool that captures a screenshot of the entire screen, performs OCR t
 
 It can also process existing image files in batch using a file glob pattern, making it useful for redacting sensitive text across many screenshots at once.
 
+| ![screenshot mode](screenshot.jpg) | ![redact mode](redact.jpg) |
+|:---:|:---:|
+| screenshot mode | redact mode |
+
 ## AI Disclaimer
 
 This project was vibe-coded with `Claude Opus 4.6`. While it has been tested on the author's system, it interacts directly with macOS screen capture, image processing, and file I/O, the author makes no guarantees and assumes no responsibility for unintended behavior, missed redactions, or any other issues arising from its use. Use at your own risk and always verify redactions before sharing sensitive screenshots.
