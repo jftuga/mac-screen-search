@@ -14,12 +14,36 @@ This project was vibe-coded with `Claude Opus 4.6`. While it has been tested on 
 
 - macOS (uses ScreenCaptureKit, Vision, and CoreGraphics)
 - Screen Recording permission (for screenshot mode)
-- Swift compiler
+- Swift compiler (only needed if compiling from source; otherwise install via [Homebrew](#installation) or download a [release](https://github.com/jftuga/mac-screen-search/releases))
+
+## Installation
+
+```sh
+brew tap jftuga/tap
+brew install jftuga/tap/mac-screen-search
+```
+
+To upgrade to a newer version:
+
+```sh
+brew update
+brew upgrade mac-screen-search
+```
+
+### Manual download
+
+Download the macOS arm64 binary from the [releases page](https://github.com/jftuga/mac-screen-search/releases):
+
+```sh
+tar -xJf mac-screen-search_v*.tar.xz
+cd mac-screen-search_v*/
+sudo cp mac-screen-search /usr/local/bin/
+```
 
 ## Building
 
 ```sh
-swiftc -O -o mac-screen-search mac-screen-search.swift -framework ScreenCaptureKit
+swiftc -o mac-screen-search mac-screen-search.swift
 ```
 
 ## Usage
@@ -62,8 +86,8 @@ mac-screen-search -c blue "password"
 Fill matched regions with a solid color to obscure the text:
 
 ```sh
-mac-screen-search -r "SSN"
-mac-screen-search -r -c black "SSN"
+mac-screen-search -r "my_password"
+mac-screen-search -r -c black "my_password"
 ```
 
 ### File glob mode
