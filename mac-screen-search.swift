@@ -1,7 +1,19 @@
-// mac-screen-search: A macOS CLI tool that captures a screenshot of the entire screen,
-// performs OCR to find all instances of a search term, draws colored rectangles around
-// each match, and opens the annotated image in Preview.
-// Requires Screen Recording permission.
+// mac-screen-search: A macOS CLI tool for finding and highlighting text on screen
+// or in existing image files via OCR.
+//
+// Modes:
+//   - Screenshot mode (default): captures the screen after a 2-second delay,
+//     performs OCR, draws colored rectangles around matches, saves a timestamped
+//     PNG, and opens it in Preview. Requires Screen Recording permission.
+//   - File glob mode (-f): processes existing image files matching a glob pattern,
+//     annotating or redacting matches in-place while preserving modification times.
+//
+// Features:
+//   - Case-insensitive exact matching or fuzzy matching via Levenshtein distance (-d)
+//   - Enhanced OCR mode (-e): preprocesses images (white background compositing,
+//     contrast boost, sharpening) and evaluates multiple OCR candidates
+//   - Redaction mode (-r): fills matched regions with a solid color
+//   - Configurable annotation color (-c) from a set of named colors
 
 import Cocoa
 import ScreenCaptureKit
@@ -217,8 +229,9 @@ func resolveColor(_ name: String) -> CGColor? {
 
 // MARK: - Annotation
 
-/// Draw rectangles around each match on a copy of the image using the given color.
-/// When redact is true, the rectangles are filled to obscure the matched text.
+/// Draw colored rectangles around each match on a copy of the image.
+/// When `redact` is true, the rectangles are filled with a solid color to obscure
+/// the matched text; otherwise, only an outline is drawn.
 func annotateImage(_ image: CGImage, matches: [TextMatch], redact: Bool = false,
                    color: CGColor = CGColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0)) -> CGImage? {
     let width = image.width
@@ -264,7 +277,7 @@ func annotateImage(_ image: CGImage, matches: [TextMatch], redact: Bool = false,
 
 // MARK: - Save and Open
 
-/// Save a CGImage as PNG and return the file URL.
+/// Save a CGImage as PNG in the current working directory and return the file URL.
 func savePNG(_ image: CGImage, filename: String) throws -> URL {
     let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent(filename)
@@ -325,7 +338,8 @@ func saveImage(_ image: CGImage, to url: URL, type: UTType) throws {
 
 // MARK: - Glob
 
-/// Expand a flat file glob pattern (no directory recursion) and return matching file URLs.
+/// Expand a flat file glob pattern (no directory recursion) and return matching
+/// file URLs sorted alphabetically.  Supports `~` expansion in the directory portion.
 func expandGlob(_ pattern: String) -> [URL] {
     let fm = FileManager.default
 
@@ -352,7 +366,7 @@ func expandGlob(_ pattern: String) -> [URL] {
     }
 }
 
-/// Open a file in Preview.
+/// Open a file in the macOS Preview application.
 func openInPreview(_ url: URL) {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -391,7 +405,9 @@ func eventCallback(
 
 // MARK: - Process Files
 
-/// Process a list of image files: OCR, annotate/redact, overwrite in-place, restore mtime.
+/// Process a list of image files: perform OCR on each, annotate or redact matches,
+/// overwrite in-place preserving the original format, and restore the original
+/// modification time.  Returns 0 on success or 1 if any file produced an error.
 func processFiles(_ files: [URL], searchTerm: String, redact: Bool,
                    enhanced: Bool = false, maxDistance: Int? = nil,
                    color: CGColor = CGColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0)) -> Int32 {
@@ -476,7 +492,9 @@ func processFiles(_ files: [URL], searchTerm: String, redact: Bool,
 
 // MARK: - Main
 
-let version = "1.0.0"
+let programName = "mac-screen-search"
+let programVersion = "v1.0.1"
+let programURL = "https://github.com/jftuga/mac-screen-search"
 
 var redact = false
 var enhanced = false
@@ -487,7 +505,8 @@ var args = Array(CommandLine.arguments.dropFirst())
 
 // Parse -v flag (version)
 if args.contains("-v") || args.contains("--version") {
-    print("mac-screen-search v\(version)")
+    print("\(programName) \(programVersion)")
+    print(programURL)
     exit(0)
 }
 
