@@ -10,11 +10,15 @@
 //
 // Features:
 //   - Case-insensitive exact matching or fuzzy matching via Levenshtein distance (-d)
+//   - Whole-word matching (-w) using word boundary detection
 //   - Enhanced OCR mode (-e): preprocesses images (white background compositing,
 //     contrast boost, sharpening) and evaluates multiple OCR candidates
 //   - Redaction mode (-r): fills matched regions with a solid color
 //   - Blur mode (-b): applies Gaussian blur to matched regions at a given intensity
 //   - Configurable annotation color (-c) from a set of named colors
+//   - Monitor selection (-m) and listing (-M) for multi-display setups
+//   - List mode (-l): prints match coordinates without annotation
+//   - Output path control (-o), no-preview mode (-n), configurable delay (-t)
 
 import Cocoa
 import ScreenCaptureKit
@@ -23,14 +27,32 @@ import Vision
 
 // MARK: - Screenshot
 
-/// Capture a screenshot of the entire primary display at Retina resolution.
-func captureScreenshot() async throws -> CGImage {
+/// Return the displays to capture based on the monitor selection flag.
+func getDisplays(selection: String?) async throws -> [SCDisplay] {
     let content = try await SCShareableContent.current
-    guard let display = content.displays.first else {
+    let allDisplays = content.displays
+    guard !allDisplays.isEmpty else {
         throw NSError(domain: "mac-screen-search", code: 1,
                       userInfo: [NSLocalizedDescriptionKey: "No display found"])
     }
 
+    guard let sel = selection else {
+        return [allDisplays[0]]
+    }
+
+    if sel == "all" {
+        return allDisplays
+    }
+
+    guard let index = Int(sel), index >= 1, index <= allDisplays.count else {
+        throw NSError(domain: "mac-screen-search", code: 1,
+                      userInfo: [NSLocalizedDescriptionKey: "Monitor index \(sel) out of range (1-\(allDisplays.count) available)"])
+    }
+    return [allDisplays[index - 1]]
+}
+
+/// Capture a screenshot of the given display at Retina resolution.
+func captureScreenshot(display: SCDisplay) async throws -> CGImage {
     let filter = SCContentFilter(display: display, excludingWindows: [])
     let config = SCStreamConfiguration()
     config.width = display.width * 2  // Retina
@@ -115,7 +137,8 @@ struct TextMatch {
 /// preprocessed and multiple OCR candidates are checked.  When `maxDistance` is
 /// set, fuzzy matching via Levenshtein distance is used instead of exact matching.
 func findMatches(in image: CGImage, searchTerm: String,
-                 enhanced: Bool = false, maxDistance: Int? = nil) throws -> [TextMatch] {
+                 enhanced: Bool = false, maxDistance: Int? = nil,
+                 wholeWord: Bool = false) throws -> [TextMatch] {
     let ocrImage = enhanced ? preprocessImage(image) : image
 
     let handler = VNImageRequestHandler(cgImage: ocrImage)
@@ -153,6 +176,13 @@ func findMatches(in image: CGImage, searchTerm: String,
                     let window = String(lowerFull[sIdx..<eIdx])
 
                     if levenshteinDistance(window, lowerSearch) <= maxDist {
+                        if wholeWord {
+                            let before = winStart > 0 ? lowerFull[lowerFull.index(lowerFull.startIndex, offsetBy: winStart - 1)] : nil
+                            let after = winStart + searchLen < textLen ? lowerFull[lowerFull.index(lowerFull.startIndex, offsetBy: winStart + searchLen)] : nil
+                            let isWord: (Character?) -> Bool = { c in guard let c = c else { return false }; return c.isLetter || c.isNumber || c == "_" }
+                            if isWord(before) || isWord(after) { continue }
+                        }
+
                         let origStart = fullString.index(fullString.startIndex, offsetBy: winStart)
                         let origEnd = fullString.index(origStart, offsetBy: searchLen)
                         let originalRange = origStart..<origEnd
@@ -170,8 +200,27 @@ func findMatches(in image: CGImage, searchTerm: String,
                         }
                     }
                 }
+            } else if wholeWord {
+                // Whole-word matching via regex word boundaries
+                let pattern = "\\b\(NSRegularExpression.escapedPattern(for: lowerSearch))\\b"
+                guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
+                let nsRange = NSRange(fullString.startIndex..., in: fullString)
+                for result in regex.matches(in: fullString, range: nsRange) {
+                    guard let swiftRange = Range(result.range, in: fullString) else { continue }
+                    if let box = try? candidate.boundingBox(for: swiftRange) {
+                        let normRect = box.boundingBox
+                        let pixelRect = CGRect(
+                            x: normRect.origin.x * imageWidth,
+                            y: (1.0 - normRect.origin.y - normRect.size.height) * imageHeight,
+                            width: normRect.size.width * imageWidth,
+                            height: normRect.size.height * imageHeight
+                        )
+                        matches.append(TextMatch(text: String(fullString[swiftRange]), rect: pixelRect))
+                        observationMatched = true
+                    }
+                }
             } else {
-                // Exact matching
+                // Exact substring matching
                 var searchStart = lowerFull.startIndex
                 while let range = lowerFull.range(of: lowerSearch, range: searchStart..<lowerFull.endIndex) {
                     let lowerOffset = lowerFull.distance(from: lowerFull.startIndex, to: range.lowerBound)
@@ -298,11 +347,22 @@ func annotateImage(_ image: CGImage, matches: [TextMatch], redact: Bool = false,
 
 // MARK: - Save and Open
 
-/// Save a CGImage as PNG in the current working directory and return the file URL.
-func savePNG(_ image: CGImage, filename: String) throws -> URL {
-    let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        .appendingPathComponent(filename)
+/// Resolve the output URL for a screenshot PNG given the -o flag value.
+func resolveOutputURL(outputPath: String?, defaultFilename: String) -> URL {
+    guard let path = outputPath else {
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(defaultFilename)
+    }
+    let expanded = NSString(string: path).expandingTildeInPath
+    var isDir: ObjCBool = false
+    if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue {
+        return URL(fileURLWithPath: expanded).appendingPathComponent(defaultFilename)
+    }
+    return URL(fileURLWithPath: expanded)
+}
 
+/// Save a CGImage as PNG to the given URL and return it.
+func savePNG(_ image: CGImage, to url: URL) throws -> URL {
     guard let dest = CGImageDestinationCreateWithURL(
         url as CFURL, UTType.png.identifier as CFString, 1, nil
     ) else {
@@ -429,12 +489,11 @@ func eventCallback(
 /// Process a list of image files: perform OCR on each, annotate or redact matches,
 /// overwrite in-place preserving the original format, and restore the original
 /// modification time.  Returns 0 on success or 1 if any file produced an error.
-func processFiles(_ files: [URL], searchTerm: String, redact: Bool, blurPercent: Int? = nil,
-                   enhanced: Bool = false, maxDistance: Int? = nil,
-                   color: CGColor = CGColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0)) -> Int32 {
+func processFiles(_ files: [URL], searchTerm: String, redact: Bool, blurPercent: Int? = nil, enhanced: Bool = false, maxDistance: Int? = nil, wholeWord: Bool = false, listOnly: Bool = false, color: CGColor = CGColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0)) -> Int32 {
     let fm = FileManager.default
     var updatedCount = 0
     var errorCount = 0
+    var listHeaderPrinted = false
 
     for fileURL in files {
         let path = fileURL.path
@@ -468,7 +527,8 @@ func processFiles(_ files: [URL], searchTerm: String, redact: Bool, blurPercent:
         let matches: [TextMatch]
         do {
             matches = try findMatches(in: image, searchTerm: searchTerm,
-                                      enhanced: enhanced, maxDistance: maxDistance)
+                                      enhanced: enhanced, maxDistance: maxDistance,
+                                      wholeWord: wholeWord)
         } catch {
             fputs("Warning: OCR failed on \(path): \(error.localizedDescription), skipping\n", stderr)
             errorCount += 1
@@ -476,6 +536,18 @@ func processFiles(_ files: [URL], searchTerm: String, redact: Bool, blurPercent:
         }
 
         if matches.isEmpty {
+            continue
+        }
+
+        if listOnly {
+            if !listHeaderPrinted {
+                print("file\ttext\tx\ty\twidth\theight")
+                listHeaderPrinted = true
+            }
+            for match in matches {
+                print("\(path)\t\(match.text)\t\(Int(match.rect.origin.x))\t\(Int(match.rect.origin.y))\t\(Int(match.rect.width))\t\(Int(match.rect.height))")
+            }
+            updatedCount += 1
             continue
         }
 
@@ -514,7 +586,7 @@ func processFiles(_ files: [URL], searchTerm: String, redact: Bool, blurPercent:
 // MARK: - Main
 
 let programName = "mac-screen-search"
-let programVersion = "v1.1.0"
+let programVersion = "v1.2.0"
 let programURL = "https://github.com/jftuga/mac-screen-search"
 
 var redact = false
@@ -523,12 +595,73 @@ var enhanced = false
 var fileGlob: String? = nil
 var maxDistance: Int? = nil
 var colorName: String = "red"
+var noOpen = false
+var outputPath: String? = nil
+var monitorSelection: String? = nil
+var listOnly = false
+var captureDelay: Double = 2.0
+var wholeWord = false
 var args = Array(CommandLine.arguments.dropFirst())
 
 // Parse -v flag (version)
 if args.contains("-v") || args.contains("--version") {
     print("\(programName) \(programVersion)")
     print(programURL)
+    exit(0)
+}
+
+// Parse -h flag (help) or no arguments
+if args.isEmpty || args.contains("-h") || args.contains("--help") {
+    print("Usage: mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v]")
+    print("       [-n] [-o <path>] [-m <n|all>] [-M] [-l] [-t <secs>] [-w]")
+    print("       <search-term> [-f <glob>]")
+    print("  -r             Redact (fill) matched regions instead of outlining them")
+    print("  -b <percent>   Blur matched regions (1-100); mutually exclusive with -r")
+    print("  -e             Enhanced OCR (preprocess image + check multiple candidates)")
+    print("  -d <dist>      Fuzzy match using Levenshtein distance threshold")
+    print("  -c <color>     Rectangle color (default: red)")
+    print("                 Available: \(namedColors.keys.sorted().joined(separator: ", "))")
+    print("  -f <glob>      Process image files matching glob instead of capturing screen")
+    print("  -n             Do not open the result in Preview (screenshot mode)")
+    print("  -o <path>      Output directory or file path for the screenshot PNG")
+    print("  -m <n|all>     Capture monitor n (1-based) or all monitors")
+    print("  -M             List connected monitors and exit")
+    print("  -l             List matches (text and coordinates) without annotating")
+    print("  -t <seconds>   Capture delay in seconds (default: 2; 0 for immediate)")
+    print("  -w             Whole-word matching (word boundaries required)")
+    print("  -h             Print this help and exit")
+    print("  -v             Print version and exit")
+    exit(0)
+}
+
+// Parse -M flag (list monitors and exit)
+if args.contains("-M") {
+    let semaphore = DispatchSemaphore(value: 0)
+    Task {
+        do {
+            let content = try await SCShareableContent.current
+            let displays = content.displays
+            if displays.isEmpty {
+                fputs("No displays found\n", stderr)
+            } else {
+                var entries: [(index: Int, logical: String, pixel: String, displayID: UInt32)] = []
+                for (i, d) in displays.enumerated() {
+                    entries.append((i + 1, "\(d.width)x\(d.height)", "\(d.width * 2)x\(d.height * 2)", d.displayID))
+                }
+                let maxLogical = entries.map { $0.logical.count }.max() ?? 0
+                let maxPixel = entries.map { $0.pixel.count }.max() ?? 0
+                for e in entries {
+                    let logPad = e.logical.padding(toLength: maxLogical, withPad: " ", startingAt: 0)
+                    let pxPad = e.pixel.padding(toLength: maxPixel, withPad: " ", startingAt: 0)
+                    print("Monitor \(e.index): \(logPad) (\(pxPad) px) [displayID: \(e.displayID)]")
+                }
+            }
+        } catch {
+            fputs("Error: \(error.localizedDescription)\n", stderr)
+        }
+        semaphore.signal()
+    }
+    semaphore.wait()
     exit(0)
 }
 
@@ -590,16 +723,107 @@ if let idx = args.firstIndex(of: "-f") {
     args.removeSubrange(idx...idx + 1)
 }
 
+// Parse -n flag (no-open: skip opening Preview)
+if let idx = args.firstIndex(of: "-n") {
+    noOpen = true
+    args.remove(at: idx)
+}
+
+// Parse -o <path> flag (output path)
+if let idx = args.firstIndex(of: "-o") {
+    guard idx + 1 < args.count else {
+        fputs("Error: -o requires a path argument\n", stderr)
+        exit(1)
+    }
+    outputPath = args[idx + 1]
+    args.removeSubrange(idx...idx + 1)
+}
+
+// Parse -m <n|all> flag (monitor selection)
+if let idx = args.firstIndex(of: "-m") {
+    guard idx + 1 < args.count else {
+        fputs("Error: -m requires a monitor index (1-based) or \"all\"\n", stderr)
+        exit(1)
+    }
+    let val = args[idx + 1]
+    if val != "all" {
+        guard let n = Int(val), n >= 1 else {
+            fputs("Error: -m requires a positive integer or \"all\"\n", stderr)
+            exit(1)
+        }
+        _ = n
+    }
+    monitorSelection = val
+    args.removeSubrange(idx...idx + 1)
+}
+
+// Parse -l flag (list matches only, no annotation)
+if let idx = args.firstIndex(of: "-l") {
+    listOnly = true
+    args.remove(at: idx)
+}
+
+// Parse -t <seconds> flag (capture delay)
+if let idx = args.firstIndex(of: "-t") {
+    guard idx + 1 < args.count, let secs = Double(args[idx + 1]), secs >= 0 else {
+        fputs("Error: -t requires a non-negative number (seconds)\n", stderr)
+        exit(1)
+    }
+    captureDelay = secs
+    args.removeSubrange(idx...idx + 1)
+}
+
+// Parse -w flag (whole word matching)
+if let idx = args.firstIndex(of: "-w") {
+    wholeWord = true
+    args.remove(at: idx)
+}
+
+// Validate flag combinations
+if fileGlob != nil {
+    if outputPath != nil {
+        fputs("Error: -o is not supported in file glob mode\n", stderr)
+        exit(1)
+    }
+    if monitorSelection != nil {
+        fputs("Error: -m is not supported in file glob mode\n", stderr)
+        exit(1)
+    }
+}
+
+if listOnly && (redact || blurPercent != nil) {
+    fputs("Error: -l is incompatible with -r and -b (no annotation is produced)\n", stderr)
+    exit(1)
+}
+
+if monitorSelection == "all", let path = outputPath {
+    let expanded = NSString(string: path).expandingTildeInPath
+    var isDir: ObjCBool = false
+    if !FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir) || !isDir.boolValue {
+        fputs("Error: -o must specify a directory when used with -m all\n", stderr)
+        exit(1)
+    }
+}
+
+if let sel = monitorSelection, sel != "all", let index = Int(sel) {
+    let semaphore = DispatchSemaphore(value: 0)
+    var displayCount = 0
+    Task {
+        if let content = try? await SCShareableContent.current {
+            displayCount = content.displays.count
+        }
+        semaphore.signal()
+    }
+    semaphore.wait()
+    if index > displayCount {
+        fputs("Error: monitor index \(index) out of range (1-\(displayCount) available)\n", stderr)
+        exit(1)
+    }
+}
+
 guard args.count == 1 else {
-    fputs("Usage: mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v] <search-term> [-f <glob>]\n", stderr)
-    fputs("  -r            Redact (fill) matched regions instead of outlining them\n", stderr)
-    fputs("  -b <percent>  Blur matched regions (1-100); mutually exclusive with -r\n", stderr)
-    fputs("  -e            Enhanced OCR (preprocess image + check multiple candidates)\n", stderr)
-    fputs("  -d <dist>     Fuzzy match using Levenshtein distance threshold\n", stderr)
-    fputs("  -c <color>    Rectangle color (default: red)\n", stderr)
-    fputs("                Available: \(namedColors.keys.sorted().joined(separator: ", "))\n", stderr)
-    fputs("  -f <glob>     Process image files matching glob instead of capturing screen\n", stderr)
-    fputs("  -v            Print version and exit\n", stderr)
+    fputs("Error: expected exactly one search term; got \(args.count == 0 ? "none" : "\(args.count): \(args.joined(separator: " "))")\n", stderr)
+    fputs("Run with -h for usage.\n", stderr)
     exit(1)
 }
 
@@ -620,49 +844,77 @@ if let glob = fileGlob {
     }
     print("Processing \(files.count) file\(files.count == 1 ? "" : "s") matching \"\(glob)\" for \"\(searchTerm)\"")
     let code = processFiles(files, searchTerm: searchTerm, redact: redact, blurPercent: blurPercent,
-                            enhanced: enhanced, maxDistance: maxDistance, color: annotationColor)
+                            enhanced: enhanced, maxDistance: maxDistance, wholeWord: wholeWord,
+                            listOnly: listOnly, color: annotationColor)
     exit(code)
 } else {
-    // Screenshot mode (original behavior)
+    // Screenshot mode
     print("Searching for: \"\(searchTerm)\"")
-    print("Capturing screen in 2 seconds...")
-    Thread.sleep(forTimeInterval: 2.0)
+    if captureDelay > 0 {
+        let delayStr = captureDelay == Double(Int(captureDelay)) ? String(Int(captureDelay)) : String(captureDelay)
+        print("Capturing screen in \(delayStr) second\(captureDelay == 1.0 ? "" : "s")...")
+        Thread.sleep(forTimeInterval: captureDelay)
+    }
 
     let semaphore = DispatchSemaphore(value: 0)
     var exitCode: Int32 = 0
 
     Task {
         do {
-            let screenshot = try await captureScreenshot()
-            print("Screenshot captured (\(screenshot.width)x\(screenshot.height))")
+            let displays = try await getDisplays(selection: monitorSelection)
+            var listHeaderPrinted = false
 
-            let matches = try findMatches(in: screenshot, searchTerm: searchTerm,
-                                          enhanced: enhanced, maxDistance: maxDistance)
+            for (displayIndex, display) in displays.enumerated() {
+                let screenshot = try await captureScreenshot(display: display)
+                let displayLabel = displays.count > 1 ? " (monitor \(displayIndex + 1))" : ""
+                print("Screenshot captured\(displayLabel) (\(screenshot.width)x\(screenshot.height))")
 
-            if matches.isEmpty {
-                print("No matches found for \"\(searchTerm)\"")
-                semaphore.signal()
-                return
+                let matches = try findMatches(in: screenshot, searchTerm: searchTerm,
+                                              enhanced: enhanced, maxDistance: maxDistance,
+                                              wholeWord: wholeWord)
+
+                if matches.isEmpty {
+                    print("No matches found for \"\(searchTerm)\"\(displayLabel)")
+                    continue
+                }
+
+                print("Found \(matches.count) match\(matches.count == 1 ? "" : "es")\(displayLabel)")
+
+                if listOnly {
+                    if !listHeaderPrinted {
+                        print("text\tx\ty\twidth\theight")
+                        listHeaderPrinted = true
+                    }
+                    for match in matches {
+                        print("\(match.text)\t\(Int(match.rect.origin.x))\t\(Int(match.rect.origin.y))\t\(Int(match.rect.width))\t\(Int(match.rect.height))")
+                    }
+                    continue
+                }
+
+                guard let annotated = annotateImage(screenshot, matches: matches, redact: redact, blurPercent: blurPercent, color: annotationColor) else {
+                    fputs("Error: failed to annotate image\(displayLabel)\n", stderr)
+                    exitCode = 1
+                    continue
+                }
+
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyyMMdd.HHmmss"
+                let timestamp = formatter.string(from: Date())
+                let filename: String
+                if displays.count > 1 {
+                    filename = "screenshot--\(timestamp)--monitor\(displayIndex + 1).png"
+                } else {
+                    filename = "screenshot--\(timestamp).png"
+                }
+
+                let url = resolveOutputURL(outputPath: outputPath, defaultFilename: filename)
+                let savedURL = try savePNG(annotated, to: url)
+                print("Saved: \(savedURL.path)")
+
+                if !noOpen {
+                    openInPreview(savedURL)
+                }
             }
-
-            print("Found \(matches.count) match\(matches.count == 1 ? "" : "es")")
-
-            guard let annotated = annotateImage(screenshot, matches: matches, redact: redact, blurPercent: blurPercent, color: annotationColor) else {
-                fputs("Error: failed to annotate image\n", stderr)
-                exitCode = 1
-                semaphore.signal()
-                return
-            }
-
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyyMMdd.HHmmss"
-            let timestamp = formatter.string(from: Date())
-            let filename = "screenshot--\(timestamp).png"
-
-            let url = try savePNG(annotated, filename: filename)
-            print("Saved: \(filename)")
-
-            openInPreview(url)
         } catch {
             fputs("Error: \(error.localizedDescription)\n", stderr)
             exitCode = 1

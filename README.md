@@ -53,7 +53,9 @@ swiftc -o mac-screen-search mac-screen-search.swift
 ## Usage
 
 ```
-mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v] <search-term> [-f <glob>]
+mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v]
+                  [-n] [-o <path>] [-m <n|all>] [-M] [-l] [-t <secs>] [-w]
+                  <search-term> [-f <glob>]
 ```
 
 ### Options
@@ -66,6 +68,14 @@ mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v] <search-ter
 | `-d <dist>` | Fuzzy match using Levenshtein distance threshold |
 | `-c <color>` | Rectangle color name (default: `red`). Available: black, blue, cyan, gray, green, magenta, orange, pink, purple, red, white, yellow |
 | `-f <glob>` | Process image files matching the glob pattern instead of capturing the screen |
+| `-n` | Do not open the result in Preview (screenshot mode only) |
+| `-o <path>` | Output directory or file path for the screenshot PNG (screenshot mode only) |
+| `-m <n\|all>` | Capture monitor `n` (1-based) or `all` monitors (screenshot mode only) |
+| `-M` | List connected monitors and exit |
+| `-l` | List matches (text and coordinates) without annotating; incompatible with `-r`/`-b` |
+| `-t <seconds>` | Capture delay in seconds (default: 2; use 0 for immediate). Screenshot mode only |
+| `-w` | Whole-word matching (require word boundaries on both sides of the match) |
+| `-h` | Print help and exit |
 | `-v` | Print version and exit |
 
 ### Screenshot mode (default)
@@ -76,7 +86,12 @@ Capture a screenshot, find all occurrences of the search term, outline them in r
 mac-screen-search "password"
 ```
 
-There is a 2-second delay before capture so you can arrange your screen.
+There is a 2-second delay before capture so you can arrange your screen. Use `-t` to change it:
+
+```sh
+mac-screen-search -t 5 "password"    # 5-second delay
+mac-screen-search -t 0 "password"    # immediate capture
+```
 
 ### Custom color
 
@@ -105,6 +120,91 @@ mac-screen-search -b 80 "api-key" -f '*.png'
 ```
 
 The `-b` and `-r` flags are mutually exclusive.
+
+### No-open mode
+
+Save the annotated screenshot without opening it in Preview. Useful for scripting and automation:
+
+```sh
+mac-screen-search -n "password"
+```
+
+### Output path
+
+Control where the screenshot PNG is saved instead of the current working directory:
+
+```sh
+mac-screen-search -o ~/Screenshots "password"          # save to directory
+mac-screen-search -o ~/Screenshots/result.png "password"  # save to specific file
+```
+
+When used with `-m all`, `-o` must point to a directory.
+
+### Monitor selection
+
+Capture a specific monitor by its 1-based index, or all connected monitors:
+
+```sh
+mac-screen-search -m 1 "password"      # primary monitor
+mac-screen-search -m 2 "password"      # second monitor
+mac-screen-search -m all "password"    # all monitors (one file per display)
+```
+
+Use `-M` to list connected monitors and their resolutions:
+
+```sh
+mac-screen-search -M
+```
+
+Example output:
+
+```
+Monitor 1: 1512x982  (3024x1964 px) [displayID: 1]
+Monitor 2: 2560x1440 (5120x2880 px) [displayID: 2]
+```
+
+### List mode
+
+Print match text and pixel coordinates without annotating or saving an image. Output is tab-separated with a header row:
+
+```sh
+mac-screen-search -t 0 -l "test"
+```
+
+```
+Searching for: "test"
+Screenshot captured (2940x1912)
+Found 3 matches
+text    x       y       width   height
+test    1766    183     92      42
+test    1060    1544    136     35
+test    331     1591    143     38
+```
+
+In file glob mode, a `file` column is prepended:
+
+```sh
+mac-screen-search -l "test" -f '*.png'
+```
+
+```
+Processing 2 files matching "*.png" for "test"
+file    text    x       y       width   height
+/Users/john/Screenshots/a.png   test    1089    273     149     34
+/Users/john/Screenshots/b.png   test    323     315     151     41
+```
+
+The `-l` flag is incompatible with `-r` and `-b`.
+
+### Whole-word matching
+
+Only match when the search term has word boundaries on both sides. Reduces false positives for short search terms:
+
+```sh
+mac-screen-search -w "is"    # matches "is" but not "this" or "island"
+```
+
+Also works with fuzzy matching (`-d`).
 
 ### File glob mode
 
@@ -159,6 +259,12 @@ All flags compose freely. For example, to batch-redact a string across many scre
 mac-screen-search -r -e -d 3 -c black "api-key" -f '~/Screenshots/*.png'
 ```
 
+Capture immediately, whole-word match, save to a specific directory without opening Preview:
+
+```sh
+mac-screen-search -t 0 -n -w -o ~/Screenshots "password"
+```
+
 ### Example output (file mode)
 
 ```
@@ -171,11 +277,11 @@ Processing 4 files matching "*.png" for "api-key"
 
 ## How it works
 
-1. **Capture** -- Takes a Retina-resolution screenshot via ScreenCaptureKit (or loads image files in `-f` mode)
+1. **Capture** -- Takes a Retina-resolution screenshot via ScreenCaptureKit (or loads image files in `-f` mode). Supports selecting a specific monitor (`-m`) and configurable delay (`-t`)
 2. **OCR** -- Runs Apple Vision's `VNRecognizeTextRequest` with accurate recognition and language correction. With `-e`, the image is preprocessed first and multiple candidates are evaluated
-3. **Search** -- Finds all case-insensitive occurrences of the search term, mapping each to pixel-coordinate bounding boxes. With `-d`, uses Levenshtein distance for fuzzy matching
-4. **Annotate** -- Draws colored outline rectangles (or solid fill with `-r`, or Gaussian blur with `-b`) around each match, using the color specified by `-c` (default: red)
-5. **Output** -- Saves the result as a timestamped PNG and opens it in Preview (screenshot mode), or overwrites files in-place preserving mtime (file mode)
+3. **Search** -- Finds all case-insensitive occurrences of the search term, mapping each to pixel-coordinate bounding boxes. With `-d`, uses Levenshtein distance for fuzzy matching. With `-w`, requires word boundaries
+4. **Annotate** -- Draws colored outline rectangles (or solid fill with `-r`, or Gaussian blur with `-b`) around each match, using the color specified by `-c` (default: red). Skipped in list mode (`-l`)
+5. **Output** -- Saves the result as a timestamped PNG and opens it in Preview (screenshot mode), or overwrites files in-place preserving mtime (file mode). Use `-o` to set the output path and `-n` to skip Preview
 
 ## Personal Project Disclosure
 
