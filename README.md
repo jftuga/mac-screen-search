@@ -4,7 +4,7 @@
 
 A macOS CLI tool that captures a screenshot of the entire screen, performs OCR to find all instances of a search term, draws colored rectangles around each match, and opens the annotated image in Preview.
 
-It can also process existing image files in batch using a file glob pattern, making it useful for redacting sensitive text across many screenshots at once.
+It can also process existing image files in batch using a file glob pattern, making it useful for redacting or blurring sensitive text across many screenshots at once.
 
 | ![screenshot mode](screenshot.jpg) | ![redact mode](redact.jpg) |
 |:---:|:---:|
@@ -53,7 +53,7 @@ swiftc -o mac-screen-search mac-screen-search.swift
 ## Usage
 
 ```
-mac-screen-search [-r] [-e] [-d <dist>] [-c <color>] [-v] <search-term> [-f <glob>]
+mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v] <search-term> [-f <glob>]
 ```
 
 ### Options
@@ -61,6 +61,7 @@ mac-screen-search [-r] [-e] [-d <dist>] [-c <color>] [-v] <search-term> [-f <glo
 | Flag | Description |
 |------|-------------|
 | `-r` | Redact (fill with solid color) matched regions instead of outlining them |
+| `-b <percent>` | Blur matched regions with Gaussian blur (1-100); mutually exclusive with `-r` |
 | `-e` | Enhanced OCR (preprocess image + check multiple candidates) |
 | `-d <dist>` | Fuzzy match using Levenshtein distance threshold |
 | `-c <color>` | Rectangle color name (default: `red`). Available: black, blue, cyan, gray, green, magenta, orange, pink, purple, red, white, yellow |
@@ -94,6 +95,17 @@ mac-screen-search -r "my_password"
 mac-screen-search -r -c black "my_password"
 ```
 
+### Blur mode
+
+Apply a Gaussian blur to matched regions instead of filling or outlining them. The percentage controls blur intensity (1 = subtle, 100 = fully obscured):
+
+```sh
+mac-screen-search -b 50 "my_password"
+mac-screen-search -b 80 "api-key" -f '*.png'
+```
+
+The `-b` and `-r` flags are mutually exclusive.
+
 ### File glob mode
 
 Process existing image files instead of capturing a screenshot. The glob is expanded by the tool itself (not the shell), so quote the pattern:
@@ -102,10 +114,11 @@ Process existing image files instead of capturing a screenshot. The glob is expa
 mac-screen-search "secret" -f '*.png'
 ```
 
-Combine with `-r` to batch-redact sensitive text across many files:
+Combine with `-r` or `-b` to batch-redact or blur sensitive text across many files:
 
 ```sh
 mac-screen-search -r "api-key" -f '~/Screenshots/*.png'
+mac-screen-search -b 60 "api-key" -f '~/Screenshots/*.png'
 ```
 
 In file mode:
@@ -161,7 +174,7 @@ Processing 4 files matching "*.png" for "api-key"
 1. **Capture** -- Takes a Retina-resolution screenshot via ScreenCaptureKit (or loads image files in `-f` mode)
 2. **OCR** -- Runs Apple Vision's `VNRecognizeTextRequest` with accurate recognition and language correction. With `-e`, the image is preprocessed first and multiple candidates are evaluated
 3. **Search** -- Finds all case-insensitive occurrences of the search term, mapping each to pixel-coordinate bounding boxes. With `-d`, uses Levenshtein distance for fuzzy matching
-4. **Annotate** -- Draws colored outline rectangles (or solid fill with `-r`) around each match, using the color specified by `-c` (default: red)
+4. **Annotate** -- Draws colored outline rectangles (or solid fill with `-r`, or Gaussian blur with `-b`) around each match, using the color specified by `-c` (default: red)
 5. **Output** -- Saves the result as a timestamped PNG and opens it in Preview (screenshot mode), or overwrites files in-place preserving mtime (file mode)
 
 ## Personal Project Disclosure
