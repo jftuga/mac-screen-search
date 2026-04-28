@@ -13,6 +13,7 @@
 //   - Enhanced OCR mode (-e): preprocesses images (white background compositing,
 //     contrast boost, sharpening) and evaluates multiple OCR candidates
 //   - Redaction mode (-r): fills matched regions with a solid color
+//   - Blur mode (-b): applies Gaussian blur to matched regions at a given intensity
 //   - Configurable annotation color (-c) from a set of named colors
 
 import Cocoa
@@ -231,8 +232,9 @@ func resolveColor(_ name: String) -> CGColor? {
 
 /// Draw colored rectangles around each match on a copy of the image.
 /// When `redact` is true, the rectangles are filled with a solid color to obscure
-/// the matched text; otherwise, only an outline is drawn.
-func annotateImage(_ image: CGImage, matches: [TextMatch], redact: Bool = false,
+/// the matched text; when `blurPercent` is set, the matched regions are Gaussian-blurred;
+/// otherwise, only an outline is drawn.
+func annotateImage(_ image: CGImage, matches: [TextMatch], redact: Bool = false, blurPercent: Int? = nil,
                    color: CGColor = CGColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0)) -> CGImage? {
     let width = image.width
     let height = image.height
@@ -250,6 +252,20 @@ func annotateImage(_ image: CGImage, matches: [TextMatch], redact: Bool = false,
     // Draw original image
     context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
+    // Pre-blur the entire image once if blur mode is active
+    var blurredImage: CGImage? = nil
+    if let bp = blurPercent {
+        let ci = CIImage(cgImage: image)
+        let radius = Double(bp) / 2.0
+        if let filter = CIFilter(name: "CIGaussianBlur") {
+            filter.setValue(ci, forKey: kCIInputImageKey)
+            filter.setValue(radius, forKey: kCIInputRadiusKey)
+            if let output = filter.outputImage?.cropped(to: ci.extent) {
+                blurredImage = CIContext().createCGImage(output, from: ci.extent)
+            }
+        }
+    }
+
     // Draw rectangles in the specified color
     context.setStrokeColor(color)
     context.setLineWidth(4.0)
@@ -264,7 +280,12 @@ func annotateImage(_ image: CGImage, matches: [TextMatch], redact: Bool = false,
             height: match.rect.height
         )
         let boxRect = flippedRect.insetBy(dx: -3, dy: -3)
-        if redact {
+        if let blurred = blurredImage {
+            context.saveGState()
+            context.clip(to: boxRect)
+            context.draw(blurred, in: CGRect(x: 0, y: 0, width: width, height: height))
+            context.restoreGState()
+        } else if redact {
             context.setFillColor(color)
             context.fill(boxRect)
         } else {
@@ -408,7 +429,7 @@ func eventCallback(
 /// Process a list of image files: perform OCR on each, annotate or redact matches,
 /// overwrite in-place preserving the original format, and restore the original
 /// modification time.  Returns 0 on success or 1 if any file produced an error.
-func processFiles(_ files: [URL], searchTerm: String, redact: Bool,
+func processFiles(_ files: [URL], searchTerm: String, redact: Bool, blurPercent: Int? = nil,
                    enhanced: Bool = false, maxDistance: Int? = nil,
                    color: CGColor = CGColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0)) -> Int32 {
     let fm = FileManager.default
@@ -459,7 +480,7 @@ func processFiles(_ files: [URL], searchTerm: String, redact: Bool,
         }
 
         // Annotate
-        guard let annotated = annotateImage(image, matches: matches, redact: redact, color: color) else {
+        guard let annotated = annotateImage(image, matches: matches, redact: redact, blurPercent: blurPercent, color: color) else {
             fputs("Warning: failed to annotate \(path), skipping\n", stderr)
             errorCount += 1
             continue
@@ -493,10 +514,11 @@ func processFiles(_ files: [URL], searchTerm: String, redact: Bool,
 // MARK: - Main
 
 let programName = "mac-screen-search"
-let programVersion = "v1.0.1"
+let programVersion = "v1.1.0"
 let programURL = "https://github.com/jftuga/mac-screen-search"
 
 var redact = false
+var blurPercent: Int? = nil
 var enhanced = false
 var fileGlob: String? = nil
 var maxDistance: Int? = nil
@@ -514,6 +536,21 @@ if args.contains("-v") || args.contains("--version") {
 if let idx = args.firstIndex(of: "-r") {
     redact = true
     args.remove(at: idx)
+}
+
+// Parse -b <percent> flag (blur matched regions)
+if let idx = args.firstIndex(of: "-b") {
+    guard idx + 1 < args.count, let pct = Int(args[idx + 1]), pct >= 1, pct <= 100 else {
+        fputs("Error: -b requires an integer argument between 1 and 100\n", stderr)
+        exit(1)
+    }
+    blurPercent = pct
+    args.removeSubrange(idx...idx + 1)
+}
+
+if redact && blurPercent != nil {
+    fputs("Error: -r and -b are mutually exclusive\n", stderr)
+    exit(1)
 }
 
 // Parse -e flag (enhanced OCR: preprocessing + multi-candidate recognition)
@@ -554,8 +591,9 @@ if let idx = args.firstIndex(of: "-f") {
 }
 
 guard args.count == 1 else {
-    fputs("Usage: mac-screen-search [-r] [-e] [-d <dist>] [-c <color>] [-v] <search-term> [-f <glob>]\n", stderr)
+    fputs("Usage: mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v] <search-term> [-f <glob>]\n", stderr)
     fputs("  -r            Redact (fill) matched regions instead of outlining them\n", stderr)
+    fputs("  -b <percent>  Blur matched regions (1-100); mutually exclusive with -r\n", stderr)
     fputs("  -e            Enhanced OCR (preprocess image + check multiple candidates)\n", stderr)
     fputs("  -d <dist>     Fuzzy match using Levenshtein distance threshold\n", stderr)
     fputs("  -c <color>    Rectangle color (default: red)\n", stderr)
@@ -581,7 +619,7 @@ if let glob = fileGlob {
         exit(1)
     }
     print("Processing \(files.count) file\(files.count == 1 ? "" : "s") matching \"\(glob)\" for \"\(searchTerm)\"")
-    let code = processFiles(files, searchTerm: searchTerm, redact: redact,
+    let code = processFiles(files, searchTerm: searchTerm, redact: redact, blurPercent: blurPercent,
                             enhanced: enhanced, maxDistance: maxDistance, color: annotationColor)
     exit(code)
 } else {
@@ -609,7 +647,7 @@ if let glob = fileGlob {
 
             print("Found \(matches.count) match\(matches.count == 1 ? "" : "es")")
 
-            guard let annotated = annotateImage(screenshot, matches: matches, redact: redact, color: annotationColor) else {
+            guard let annotated = annotateImage(screenshot, matches: matches, redact: redact, blurPercent: blurPercent, color: annotationColor) else {
                 fputs("Error: failed to annotate image\n", stderr)
                 exitCode = 1
                 semaphore.signal()
