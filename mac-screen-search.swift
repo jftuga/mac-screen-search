@@ -2,9 +2,9 @@
 // or in existing image files via OCR.
 //
 // Modes:
-//   - Screenshot mode (default): captures the screen after a 2-second delay,
-//     performs OCR, draws colored rectangles around matches, saves a timestamped
-//     PNG, and opens it in Preview. Requires Screen Recording permission.
+//   - Screenshot mode (default): captures the screen after a configurable delay (-t,
+//     default 2s), performs OCR, draws colored rectangles around matches, saves a
+//     timestamped PNG, and opens it in Preview. Requires Screen Recording permission.
 //   - File glob mode (-f): processes existing image files matching a glob pattern,
 //     annotating or redacting matches in-place while preserving modification times.
 //
@@ -17,8 +17,9 @@
 //   - Blur mode (-b): applies Gaussian blur to matched regions at a given intensity
 //   - Configurable annotation color (-c) from a set of named colors
 //   - Monitor selection (-m) and listing (-M) for multi-display setups
-//   - List mode (-l): prints match coordinates without annotation
+//   - List mode (-l): prints match text and coordinates without annotation
 //   - Output path control (-o), no-preview mode (-n), configurable delay (-t)
+//   - Help (-h) and version (-v) flags
 
 import Cocoa
 import ScreenCaptureKit
