@@ -55,7 +55,7 @@ swiftc -o mac-screen-search mac-screen-search.swift
 ```
 mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v]
                   [-n] [-o <path>] [-m <n|all>] [-M] [-l] [-t <secs>] [-w]
-                  <search-term> [-f <glob>]
+                  [-D <delim>] <search-term> [-f <glob>]
 ```
 
 ### Options
@@ -75,6 +75,7 @@ mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v]
 | `-l` | List matches (text and coordinates) without annotating; incompatible with `-r`/`-b` |
 | `-t <seconds>` | Capture delay in seconds (default: 2; use 0 for immediate). Screenshot mode only |
 | `-w` | Whole-word matching (require word boundaries on both sides of the match) |
+| `-D <delim>` | Delimiter for multiple search terms (default: `\|`). The search-term argument is split on this delimiter; each piece is searched independently and all matches are merged |
 | `-h` | Print help and exit |
 | `-v` | Print version and exit |
 
@@ -206,6 +207,22 @@ mac-screen-search -w "is"    # matches "is" but not "this" or "island"
 
 Also works with fuzzy matching (`-d`).
 
+### Multi-term search
+
+Search for multiple terms at once by separating them with `|` (the default delimiter). All terms are matched against the same OCR output and results are merged:
+
+```sh
+mac-screen-search "password|secret|api-key"
+```
+
+Use `-D` to change the delimiter if your search terms contain the `|` character:
+
+```sh
+mac-screen-search -D "," "password,secret,api-key"
+```
+
+Since the shell interprets `|` as a pipe, the search-term argument must be quoted.
+
 ### File glob mode
 
 Process existing image files instead of capturing a screenshot. The glob is expanded by the tool itself (not the shell), so quote the pattern:
@@ -279,7 +296,7 @@ Processing 4 files matching "*.png" for "api-key"
 
 1. **Capture** -- Takes a Retina-resolution screenshot via ScreenCaptureKit (or loads image files in `-f` mode). Supports selecting a specific monitor (`-m`) and configurable delay (`-t`)
 2. **OCR** -- Runs Apple Vision's `VNRecognizeTextRequest` with accurate recognition and language correction. With `-e`, the image is preprocessed first and multiple candidates are evaluated
-3. **Search** -- Finds all case-insensitive occurrences of the search term, mapping each to pixel-coordinate bounding boxes. With `-d`, uses Levenshtein distance for fuzzy matching. With `-w`, requires word boundaries
+3. **Search** -- Finds all case-insensitive occurrences of each search term (split by `-D` delimiter, default `|`), mapping each to pixel-coordinate bounding boxes. With `-d`, uses Levenshtein distance for fuzzy matching. With `-w`, requires word boundaries
 4. **Annotate** -- Draws colored outline rectangles (or solid fill with `-r`, or Gaussian blur with `-b`) around each match, using the color specified by `-c` (default: red). Skipped in list mode (`-l`)
 5. **Output** -- Saves the result as a timestamped PNG and opens it in Preview (screenshot mode), or overwrites files in-place preserving mtime (file mode). Use `-o` to set the output path and `-n` to skip Preview
 

@@ -18,6 +18,7 @@
 //   - Configurable annotation color (-c) from a set of named colors
 //   - Monitor selection (-m) and listing (-M) for multi-display setups
 //   - List mode (-l): prints match text and coordinates without annotation
+//   - Multi-term search via configurable delimiter (-D, default: |)
 //   - Output path control (-o), no-preview mode (-n), configurable delay (-t)
 //   - Help (-h) and version (-v) flags
 
@@ -134,12 +135,11 @@ struct TextMatch {
 }
 
 /// Perform OCR on the image and return bounding rects for all occurrences of the
-/// search term (case-insensitive).  When `enhanced` is true, the image is
-/// preprocessed and multiple OCR candidates are checked.  When `maxDistance` is
-/// set, fuzzy matching via Levenshtein distance is used instead of exact matching.
-func findMatches(in image: CGImage, searchTerm: String,
-                 enhanced: Bool = false, maxDistance: Int? = nil,
-                 wholeWord: Bool = false) throws -> [TextMatch] {
+/// search terms (case-insensitive).  OCR runs once; each term is matched against
+/// the same recognized text.  When `enhanced` is true, the image is preprocessed
+/// and multiple OCR candidates are checked.  When `maxDistance` is set, fuzzy
+/// matching via Levenshtein distance is used instead of exact matching.
+func findMatches(in image: CGImage, searchTerms: [String], enhanced: Bool = false, maxDistance: Int? = nil, wholeWord: Bool = false) throws -> [TextMatch] {
     let ocrImage = enhanced ? preprocessImage(image) : image
 
     let handler = VNImageRequestHandler(cgImage: ocrImage)
@@ -152,40 +152,80 @@ func findMatches(in image: CGImage, searchTerm: String,
 
     let imageWidth = CGFloat(image.width)
     let imageHeight = CGFloat(image.height)
-    let lowerSearch = searchTerm.lowercased()
     let candidateCount = enhanced ? 5 : 1
     var matches: [TextMatch] = []
 
-    for observation in observations {
-        let candidates = observation.topCandidates(candidateCount)
-        var observationMatched = false
+    for searchTerm in searchTerms {
+        let lowerSearch = searchTerm.lowercased()
 
-        for candidate in candidates {
-            let fullString = candidate.string
-            let lowerFull = fullString.lowercased()
+        for observation in observations {
+            let candidates = observation.topCandidates(candidateCount)
+            var observationMatched = false
 
-            if let maxDist = maxDistance {
-                // Fuzzy matching: slide a window of the search term's length
-                // across the recognized text and check edit distance.
-                let searchLen = lowerSearch.count
-                let textLen = lowerFull.count
-                guard textLen >= searchLen else { continue }
+            for candidate in candidates {
+                let fullString = candidate.string
+                let lowerFull = fullString.lowercased()
 
-                for winStart in 0...(textLen - searchLen) {
-                    let sIdx = lowerFull.index(lowerFull.startIndex, offsetBy: winStart)
-                    let eIdx = lowerFull.index(sIdx, offsetBy: searchLen)
-                    let window = String(lowerFull[sIdx..<eIdx])
+                if let maxDist = maxDistance {
+                    let searchLen = lowerSearch.count
+                    let textLen = lowerFull.count
+                    guard textLen >= searchLen else { continue }
 
-                    if levenshteinDistance(window, lowerSearch) <= maxDist {
-                        if wholeWord {
-                            let before = winStart > 0 ? lowerFull[lowerFull.index(lowerFull.startIndex, offsetBy: winStart - 1)] : nil
-                            let after = winStart + searchLen < textLen ? lowerFull[lowerFull.index(lowerFull.startIndex, offsetBy: winStart + searchLen)] : nil
-                            let isWord: (Character?) -> Bool = { c in guard let c = c else { return false }; return c.isLetter || c.isNumber || c == "_" }
-                            if isWord(before) || isWord(after) { continue }
+                    for winStart in 0...(textLen - searchLen) {
+                        let sIdx = lowerFull.index(lowerFull.startIndex, offsetBy: winStart)
+                        let eIdx = lowerFull.index(sIdx, offsetBy: searchLen)
+                        let window = String(lowerFull[sIdx..<eIdx])
+
+                        if levenshteinDistance(window, lowerSearch) <= maxDist {
+                            if wholeWord {
+                                let before = winStart > 0 ? lowerFull[lowerFull.index(lowerFull.startIndex, offsetBy: winStart - 1)] : nil
+                                let after = winStart + searchLen < textLen ? lowerFull[lowerFull.index(lowerFull.startIndex, offsetBy: winStart + searchLen)] : nil
+                                let isWord: (Character?) -> Bool = { c in guard let c = c else { return false }; return c.isLetter || c.isNumber || c == "_" }
+                                if isWord(before) || isWord(after) { continue }
+                            }
+
+                            let origStart = fullString.index(fullString.startIndex, offsetBy: winStart)
+                            let origEnd = fullString.index(origStart, offsetBy: searchLen)
+                            let originalRange = origStart..<origEnd
+
+                            if let box = try? candidate.boundingBox(for: originalRange) {
+                                let normRect = box.boundingBox
+                                let pixelRect = CGRect(
+                                    x: normRect.origin.x * imageWidth,
+                                    y: (1.0 - normRect.origin.y - normRect.size.height) * imageHeight,
+                                    width: normRect.size.width * imageWidth,
+                                    height: normRect.size.height * imageHeight
+                                )
+                                matches.append(TextMatch(text: String(fullString[originalRange]), rect: pixelRect))
+                                observationMatched = true
+                            }
                         }
-
-                        let origStart = fullString.index(fullString.startIndex, offsetBy: winStart)
-                        let origEnd = fullString.index(origStart, offsetBy: searchLen)
+                    }
+                } else if wholeWord {
+                    let pattern = "\\b\(NSRegularExpression.escapedPattern(for: lowerSearch))\\b"
+                    guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
+                    let nsRange = NSRange(fullString.startIndex..., in: fullString)
+                    for result in regex.matches(in: fullString, range: nsRange) {
+                        guard let swiftRange = Range(result.range, in: fullString) else { continue }
+                        if let box = try? candidate.boundingBox(for: swiftRange) {
+                            let normRect = box.boundingBox
+                            let pixelRect = CGRect(
+                                x: normRect.origin.x * imageWidth,
+                                y: (1.0 - normRect.origin.y - normRect.size.height) * imageHeight,
+                                width: normRect.size.width * imageWidth,
+                                height: normRect.size.height * imageHeight
+                            )
+                            matches.append(TextMatch(text: String(fullString[swiftRange]), rect: pixelRect))
+                            observationMatched = true
+                        }
+                    }
+                } else {
+                    var searchStart = lowerFull.startIndex
+                    while let range = lowerFull.range(of: lowerSearch, range: searchStart..<lowerFull.endIndex) {
+                        let lowerOffset = lowerFull.distance(from: lowerFull.startIndex, to: range.lowerBound)
+                        let upperOffset = lowerFull.distance(from: lowerFull.startIndex, to: range.upperBound)
+                        let origStart = fullString.index(fullString.startIndex, offsetBy: lowerOffset)
+                        let origEnd = fullString.index(fullString.startIndex, offsetBy: upperOffset)
                         let originalRange = origStart..<origEnd
 
                         if let box = try? candidate.boundingBox(for: originalRange) {
@@ -199,56 +239,13 @@ func findMatches(in image: CGImage, searchTerm: String,
                             matches.append(TextMatch(text: String(fullString[originalRange]), rect: pixelRect))
                             observationMatched = true
                         }
-                    }
-                }
-            } else if wholeWord {
-                // Whole-word matching via regex word boundaries
-                let pattern = "\\b\(NSRegularExpression.escapedPattern(for: lowerSearch))\\b"
-                guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
-                let nsRange = NSRange(fullString.startIndex..., in: fullString)
-                for result in regex.matches(in: fullString, range: nsRange) {
-                    guard let swiftRange = Range(result.range, in: fullString) else { continue }
-                    if let box = try? candidate.boundingBox(for: swiftRange) {
-                        let normRect = box.boundingBox
-                        let pixelRect = CGRect(
-                            x: normRect.origin.x * imageWidth,
-                            y: (1.0 - normRect.origin.y - normRect.size.height) * imageHeight,
-                            width: normRect.size.width * imageWidth,
-                            height: normRect.size.height * imageHeight
-                        )
-                        matches.append(TextMatch(text: String(fullString[swiftRange]), rect: pixelRect))
-                        observationMatched = true
-                    }
-                }
-            } else {
-                // Exact substring matching
-                var searchStart = lowerFull.startIndex
-                while let range = lowerFull.range(of: lowerSearch, range: searchStart..<lowerFull.endIndex) {
-                    let lowerOffset = lowerFull.distance(from: lowerFull.startIndex, to: range.lowerBound)
-                    let upperOffset = lowerFull.distance(from: lowerFull.startIndex, to: range.upperBound)
-                    let origStart = fullString.index(fullString.startIndex, offsetBy: lowerOffset)
-                    let origEnd = fullString.index(fullString.startIndex, offsetBy: upperOffset)
-                    let originalRange = origStart..<origEnd
 
-                    if let box = try? candidate.boundingBox(for: originalRange) {
-                        let normRect = box.boundingBox
-                        let pixelRect = CGRect(
-                            x: normRect.origin.x * imageWidth,
-                            y: (1.0 - normRect.origin.y - normRect.size.height) * imageHeight,
-                            width: normRect.size.width * imageWidth,
-                            height: normRect.size.height * imageHeight
-                        )
-                        matches.append(TextMatch(text: String(fullString[originalRange]), rect: pixelRect))
-                        observationMatched = true
+                        searchStart = range.upperBound
                     }
-
-                    searchStart = range.upperBound
                 }
+
+                if observationMatched { break }
             }
-
-            // Stop checking lower-ranked candidates once we have matches
-            // from a higher-ranked one to avoid duplicate bounding boxes.
-            if observationMatched { break }
         }
     }
 
@@ -490,7 +487,7 @@ func eventCallback(
 /// Process a list of image files: perform OCR on each, annotate or redact matches,
 /// overwrite in-place preserving the original format, and restore the original
 /// modification time.  Returns 0 on success or 1 if any file produced an error.
-func processFiles(_ files: [URL], searchTerm: String, redact: Bool, blurPercent: Int? = nil, enhanced: Bool = false, maxDistance: Int? = nil, wholeWord: Bool = false, listOnly: Bool = false, color: CGColor = CGColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0)) -> Int32 {
+func processFiles(_ files: [URL], searchTerms: [String], redact: Bool, blurPercent: Int? = nil, enhanced: Bool = false, maxDistance: Int? = nil, wholeWord: Bool = false, listOnly: Bool = false, color: CGColor = CGColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0)) -> Int32 {
     let fm = FileManager.default
     var updatedCount = 0
     var errorCount = 0
@@ -527,7 +524,7 @@ func processFiles(_ files: [URL], searchTerm: String, redact: Bool, blurPercent:
         // OCR and find matches
         let matches: [TextMatch]
         do {
-            matches = try findMatches(in: image, searchTerm: searchTerm,
+            matches = try findMatches(in: image, searchTerms: searchTerms,
                                       enhanced: enhanced, maxDistance: maxDistance,
                                       wholeWord: wholeWord)
         } catch {
@@ -587,7 +584,7 @@ func processFiles(_ files: [URL], searchTerm: String, redact: Bool, blurPercent:
 // MARK: - Main
 
 let programName = "mac-screen-search"
-let programVersion = "v1.2.0"
+let programVersion = "v1.3.0"
 let programURL = "https://github.com/jftuga/mac-screen-search"
 
 var redact = false
@@ -602,6 +599,7 @@ var monitorSelection: String? = nil
 var listOnly = false
 var captureDelay: Double = 2.0
 var wholeWord = false
+var delimiter: String = "|"
 var args = Array(CommandLine.arguments.dropFirst())
 
 // Parse -v flag (version)
@@ -614,7 +612,7 @@ if args.contains("-v") || args.contains("--version") {
 // Parse -h flag (help) or no arguments
 if args.isEmpty || args.contains("-h") || args.contains("--help") {
     print("Usage: mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v]")
-    print("       [-n] [-o <path>] [-m <n|all>] [-M] [-l] [-t <secs>] [-w]")
+    print("       [-n] [-o <path>] [-m <n|all>] [-M] [-l] [-t <secs>] [-w] [-D <delim>]")
     print("       <search-term> [-f <glob>]")
     print("  -r             Redact (fill) matched regions instead of outlining them")
     print("  -b <percent>   Blur matched regions (1-100); mutually exclusive with -r")
@@ -630,6 +628,7 @@ if args.isEmpty || args.contains("-h") || args.contains("--help") {
     print("  -l             List matches (text and coordinates) without annotating")
     print("  -t <seconds>   Capture delay in seconds (default: 2; 0 for immediate)")
     print("  -w             Whole-word matching (word boundaries required)")
+    print("  -D <delim>     Delimiter for multiple search terms (default: |)")
     print("  -h             Print this help and exit")
     print("  -v             Print version and exit")
     exit(0)
@@ -780,6 +779,20 @@ if let idx = args.firstIndex(of: "-w") {
     args.remove(at: idx)
 }
 
+// Parse -D <delimiter> flag (multi-term delimiter)
+if let idx = args.firstIndex(of: "-D") {
+    guard idx + 1 < args.count else {
+        fputs("Error: -D requires a delimiter string argument\n", stderr)
+        exit(1)
+    }
+    delimiter = args[idx + 1]
+    if delimiter.isEmpty {
+        fputs("Error: -D delimiter must not be empty\n", stderr)
+        exit(1)
+    }
+    args.removeSubrange(idx...idx + 1)
+}
+
 // Validate flag combinations
 if fileGlob != nil {
     if outputPath != nil {
@@ -828,7 +841,12 @@ guard args.count == 1 else {
     exit(1)
 }
 
-let searchTerm = args[0]
+let searchTerms = args[0].components(separatedBy: delimiter).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+if searchTerms.isEmpty {
+    fputs("Error: no non-empty search terms found after splitting by delimiter \"\(delimiter)\"\n", stderr)
+    exit(1)
+}
+let termsDisplay = searchTerms.map { "\"\($0)\"" }.joined(separator: ", ")
 
 guard let annotationColor = resolveColor(colorName) else {
     fputs("Error: unknown color \"\(colorName)\"\n", stderr)
@@ -843,14 +861,14 @@ if let glob = fileGlob {
         fputs("No files matched: \(glob)\n", stderr)
         exit(1)
     }
-    print("Processing \(files.count) file\(files.count == 1 ? "" : "s") matching \"\(glob)\" for \"\(searchTerm)\"")
-    let code = processFiles(files, searchTerm: searchTerm, redact: redact, blurPercent: blurPercent,
+    print("Processing \(files.count) file\(files.count == 1 ? "" : "s") matching \"\(glob)\" for \(termsDisplay)")
+    let code = processFiles(files, searchTerms: searchTerms, redact: redact, blurPercent: blurPercent,
                             enhanced: enhanced, maxDistance: maxDistance, wholeWord: wholeWord,
                             listOnly: listOnly, color: annotationColor)
     exit(code)
 } else {
     // Screenshot mode
-    print("Searching for: \"\(searchTerm)\"")
+    print("Searching for: \(termsDisplay)")
     if captureDelay > 0 {
         let delayStr = captureDelay == Double(Int(captureDelay)) ? String(Int(captureDelay)) : String(captureDelay)
         print("Capturing screen in \(delayStr) second\(captureDelay == 1.0 ? "" : "s")...")
@@ -870,12 +888,12 @@ if let glob = fileGlob {
                 let displayLabel = displays.count > 1 ? " (monitor \(displayIndex + 1))" : ""
                 print("Screenshot captured\(displayLabel) (\(screenshot.width)x\(screenshot.height))")
 
-                let matches = try findMatches(in: screenshot, searchTerm: searchTerm,
+                let matches = try findMatches(in: screenshot, searchTerms: searchTerms,
                                               enhanced: enhanced, maxDistance: maxDistance,
                                               wholeWord: wholeWord)
 
                 if matches.isEmpty {
-                    print("No matches found for \"\(searchTerm)\"\(displayLabel)")
+                    print("No matches found for \(termsDisplay)\(displayLabel)")
                     continue
                 }
 
