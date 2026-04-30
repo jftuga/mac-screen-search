@@ -16,6 +16,7 @@
 //   - Redaction mode (-r): fills matched regions with a solid color
 //   - Blur mode (-b): applies Gaussian blur to matched regions at a given intensity
 //   - Configurable annotation color (-c) from a set of named colors
+//   - Configurable line thickness (-T) for outline rectangles
 //   - Monitor selection (-m) and listing (-M) for multi-display setups
 //   - List mode (-l): prints match text and coordinates without annotation
 //   - Multi-term search via configurable delimiter (-D, default: |)
@@ -282,7 +283,7 @@ func resolveColor(_ name: String) -> CGColor? {
 /// the matched text; when `blurPercent` is set, the matched regions are Gaussian-blurred;
 /// otherwise, only an outline is drawn.
 func annotateImage(_ image: CGImage, matches: [TextMatch], redact: Bool = false, blurPercent: Int? = nil,
-                   color: CGColor = CGColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0)) -> CGImage? {
+                   color: CGColor = CGColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0), lineThickness: CGFloat = 4.0) -> CGImage? {
     let width = image.width
     let height = image.height
 
@@ -315,7 +316,7 @@ func annotateImage(_ image: CGImage, matches: [TextMatch], redact: Bool = false,
 
     // Draw rectangles in the specified color
     context.setStrokeColor(color)
-    context.setLineWidth(4.0)
+    context.setLineWidth(lineThickness)
 
     for match in matches {
         // CGContext origin is bottom-left, but our rects were computed with
@@ -550,7 +551,7 @@ func processFiles(_ files: [URL], searchTerms: [String], redact: Bool, blurPerce
         }
 
         // Annotate
-        guard let annotated = annotateImage(image, matches: matches, redact: redact, blurPercent: blurPercent, color: color) else {
+        guard let annotated = annotateImage(image, matches: matches, redact: redact, blurPercent: blurPercent, color: color, lineThickness: lineThickness) else {
             fputs("Warning: failed to annotate \(path), skipping\n", stderr)
             errorCount += 1
             continue
@@ -584,7 +585,7 @@ func processFiles(_ files: [URL], searchTerms: [String], redact: Bool, blurPerce
 // MARK: - Main
 
 let programName = "mac-screen-search"
-let programVersion = "v1.3.0"
+let programVersion = "v1.4.0"
 let programURL = "https://github.com/jftuga/mac-screen-search"
 
 var redact = false
@@ -600,6 +601,7 @@ var listOnly = false
 var captureDelay: Double = 2.0
 var wholeWord = false
 var delimiter: String = "|"
+var lineThickness: CGFloat = 4.0
 var args = Array(CommandLine.arguments.dropFirst())
 
 // Parse -v flag (version)
@@ -611,9 +613,9 @@ if args.contains("-v") || args.contains("--version") {
 
 // Parse -h flag (help) or no arguments
 if args.isEmpty || args.contains("-h") || args.contains("--help") {
-    print("Usage: mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v]")
+    print("Usage: mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-T <width>]")
     print("       [-n] [-o <path>] [-m <n|all>] [-M] [-l] [-t <secs>] [-w] [-D <delim>]")
-    print("       <search-term> [-f <glob>]")
+    print("       [-v] <search-term> [-f <glob>]")
     print("  -r             Redact (fill) matched regions instead of outlining them")
     print("  -b <percent>   Blur matched regions (1-100); mutually exclusive with -r")
     print("  -e             Enhanced OCR (preprocess image + check multiple candidates)")
@@ -629,6 +631,7 @@ if args.isEmpty || args.contains("-h") || args.contains("--help") {
     print("  -t <seconds>   Capture delay in seconds (default: 2; 0 for immediate)")
     print("  -w             Whole-word matching (word boundaries required)")
     print("  -D <delim>     Delimiter for multiple search terms (default: |)")
+    print("  -T <width>     Line thickness for outlines (default: 4)")
     print("  -h             Print this help and exit")
     print("  -v             Print version and exit")
     exit(0)
@@ -793,6 +796,16 @@ if let idx = args.firstIndex(of: "-D") {
     args.removeSubrange(idx...idx + 1)
 }
 
+// Parse -T <width> flag (line thickness)
+if let idx = args.firstIndex(of: "-T") {
+    guard idx + 1 < args.count, let width = Double(args[idx + 1]), width > 0 else {
+        fputs("Error: -T requires a positive number\n", stderr)
+        exit(1)
+    }
+    lineThickness = CGFloat(width)
+    args.removeSubrange(idx...idx + 1)
+}
+
 // Validate flag combinations
 if fileGlob != nil {
     if outputPath != nil {
@@ -910,7 +923,7 @@ if let glob = fileGlob {
                     continue
                 }
 
-                guard let annotated = annotateImage(screenshot, matches: matches, redact: redact, blurPercent: blurPercent, color: annotationColor) else {
+                guard let annotated = annotateImage(screenshot, matches: matches, redact: redact, blurPercent: blurPercent, color: annotationColor, lineThickness: lineThickness) else {
                     fputs("Error: failed to annotate image\(displayLabel)\n", stderr)
                     exitCode = 1
                     continue
