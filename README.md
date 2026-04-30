@@ -55,9 +55,9 @@ swiftc -o mac-screen-search mac-screen-search.swift
 ## Usage
 
 ```
-mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v]
+mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-T <width>]
                   [-n] [-o <path>] [-m <n|all>] [-M] [-l] [-t <secs>] [-w]
-                  [-D <delim>] <search-term> [-f <glob>]
+                  [-D <delim>] [-v] <search-term> [-f <glob>]
 ```
 
 ### Options
@@ -78,6 +78,7 @@ mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-v]
 | `-t <seconds>` | Capture delay in seconds (default: 2; use 0 for immediate). Screenshot mode only |
 | `-w` | Whole-word matching (require word boundaries on both sides of the match) |
 | `-D <delim>` | Delimiter for multiple search terms (default: `\|`). The search-term argument is split on this delimiter; each piece is searched independently and all matches are merged |
+| `-T <width>` | Line thickness for outline rectangles (default: `4`). Accepts any positive number |
 | `-h` | Print help and exit |
 | `-v` | Print version and exit |
 
