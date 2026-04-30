@@ -9,6 +9,8 @@ It can also process existing image files in batch using a file glob pattern, mak
 | ![screenshot mode](screenshot.jpg) | ![redact mode](redact.jpg) |
 |:---:|:---:|
 | screenshot mode | redact mode |
+| ![park](park.jpg) | ![dollar](dollar.jpg) |
+| park | dollar |
 
 ## AI Disclaimer
 
