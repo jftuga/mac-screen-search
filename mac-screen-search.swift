@@ -21,6 +21,8 @@
 //   - List mode (-l): prints match text and coordinates without annotation
 //   - Multi-term search via configurable delimiter (-D, default: |)
 //   - Output path control (-o), no-preview mode (-n), configurable delay (-t)
+//   - Debug save (-s): writes the exact unannotated image passed to OCR
+//   - No-match hints suggesting -m (unsearched monitors) and -s
 //   - Help (-h) and version (-v) flags
 
 import Cocoa
@@ -30,8 +32,9 @@ import Vision
 
 // MARK: - Screenshot
 
-/// Return the displays to capture based on the monitor selection flag.
-func getDisplays(selection: String?) async throws -> [SCDisplay] {
+/// Return the displays to capture based on the monitor selection flag, along with
+/// the total number of connected displays.
+func getDisplays(selection: String?) async throws -> (selected: [SCDisplay], total: Int) {
     let content = try await SCShareableContent.current
     let allDisplays = content.displays
     guard !allDisplays.isEmpty else {
@@ -40,18 +43,18 @@ func getDisplays(selection: String?) async throws -> [SCDisplay] {
     }
 
     guard let sel = selection else {
-        return [allDisplays[0]]
+        return ([allDisplays[0]], allDisplays.count)
     }
 
     if sel == "all" {
-        return allDisplays
+        return (allDisplays, allDisplays.count)
     }
 
     guard let index = Int(sel), index >= 1, index <= allDisplays.count else {
         throw NSError(domain: "mac-screen-search", code: 1,
                       userInfo: [NSLocalizedDescriptionKey: "Monitor index \(sel) out of range (1-\(allDisplays.count) available)"])
     }
-    return [allDisplays[index - 1]]
+    return ([allDisplays[index - 1]], allDisplays.count)
 }
 
 /// Capture a screenshot of the given display at Retina resolution.
@@ -127,6 +130,12 @@ func preprocessImage(_ image: CGImage) -> CGImage {
     return context.createCGImage(result, from: result.extent) ?? image
 }
 
+/// Return the image that OCR should run on: the preprocessed image when
+/// `enhanced` is true, otherwise the original.
+func ocrInput(_ image: CGImage, enhanced: Bool) -> CGImage {
+    return enhanced ? preprocessImage(image) : image
+}
+
 // MARK: - OCR
 
 /// A single match with its bounding box in image pixel coordinates.
@@ -137,13 +146,12 @@ struct TextMatch {
 
 /// Perform OCR on the image and return bounding rects for all occurrences of the
 /// search terms (case-insensitive).  OCR runs once; each term is matched against
-/// the same recognized text.  When `enhanced` is true, the image is preprocessed
-/// and multiple OCR candidates are checked.  When `maxDistance` is set, fuzzy
-/// matching via Levenshtein distance is used instead of exact matching.
+/// the same recognized text.  Callers are responsible for preprocessing (see
+/// `ocrInput`).  When `enhanced` is true, multiple OCR candidates are checked.
+/// When `maxDistance` is set, fuzzy matching via Levenshtein distance is used
+/// instead of exact matching.
 func findMatches(in image: CGImage, searchTerms: [String], enhanced: Bool = false, maxDistance: Int? = nil, wholeWord: Bool = false) throws -> [TextMatch] {
-    let ocrImage = enhanced ? preprocessImage(image) : image
-
-    let handler = VNImageRequestHandler(cgImage: ocrImage)
+    let handler = VNImageRequestHandler(cgImage: image)
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
@@ -360,6 +368,14 @@ func resolveOutputURL(outputPath: String?, defaultFilename: String) -> URL {
     return URL(fileURLWithPath: expanded)
 }
 
+/// Resolve the output URL for the debug (-s) image: always `defaultFilename`,
+/// placed in the same directory the annotated PNG would be written to.
+func resolveDebugOutputURL(outputPath: String?, defaultFilename: String) -> URL {
+    return resolveOutputURL(outputPath: outputPath, defaultFilename: defaultFilename)
+        .deletingLastPathComponent()
+        .appendingPathComponent(defaultFilename)
+}
+
 /// Save a CGImage as PNG to the given URL and return it.
 func savePNG(_ image: CGImage, to url: URL) throws -> URL {
     guard let dest = CGImageDestinationCreateWithURL(
@@ -483,6 +499,23 @@ func eventCallback(
 }
 */
 
+// MARK: - Hints
+
+/// Build hints for a screenshot-mode search that found nothing: suggest -m when
+/// other connected monitors were not searched, and -s when the searched image was
+/// not saved.  Returns an empty array when there is nothing useful to suggest.
+func noMatchHints(monitorSelection: String?, totalDisplays: Int, savedSearched: Bool) -> [String] {
+    var hints: [String] = []
+    if monitorSelection != "all" && totalDisplays > 1 {
+        let searched = monitorSelection.flatMap { Int($0) } ?? 1
+        hints.append("Hint: searched monitor \(searched) of \(totalDisplays); use -m <n> or -m all if the text is on another screen.")
+    }
+    if !savedSearched {
+        hints.append("Hint: use -s to save the searched image and see what OCR actually saw.")
+    }
+    return hints
+}
+
 // MARK: - Process Files
 
 /// Process a list of image files: perform OCR on each, annotate or redact matches,
@@ -525,7 +558,7 @@ func processFiles(_ files: [URL], searchTerms: [String], redact: Bool, blurPerce
         // OCR and find matches
         let matches: [TextMatch]
         do {
-            matches = try findMatches(in: image, searchTerms: searchTerms,
+            matches = try findMatches(in: ocrInput(image, enhanced: enhanced), searchTerms: searchTerms,
                                       enhanced: enhanced, maxDistance: maxDistance,
                                       wholeWord: wholeWord)
         } catch {
@@ -585,7 +618,7 @@ func processFiles(_ files: [URL], searchTerms: [String], redact: Bool, blurPerce
 // MARK: - Main
 
 let programName = "mac-screen-search"
-let programVersion = "v1.4.0"
+let programVersion = "v1.5.0"
 let programURL = "https://github.com/jftuga/mac-screen-search"
 
 var redact = false
@@ -602,6 +635,7 @@ var captureDelay: Double = 2.0
 var wholeWord = false
 var delimiter: String = "|"
 var lineThickness: CGFloat = 4.0
+var saveSearched = false
 var args = Array(CommandLine.arguments.dropFirst())
 
 // Parse -v flag (version)
@@ -615,7 +649,7 @@ if args.contains("-v") || args.contains("--version") {
 if args.isEmpty || args.contains("-h") || args.contains("--help") {
     print("Usage: mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-T <width>]")
     print("       [-n] [-o <path>] [-m <n|all>] [-M] [-l] [-t <secs>] [-w] [-D <delim>]")
-    print("       [-v] <search-term> [-f <glob>]")
+    print("       [-s] [-v] <search-term> [-f <glob>]")
     print("  -r             Redact (fill) matched regions instead of outlining them")
     print("  -b <percent>   Blur matched regions (1-100); mutually exclusive with -r")
     print("  -e             Enhanced OCR (preprocess image + check multiple candidates)")
@@ -632,6 +666,8 @@ if args.isEmpty || args.contains("-h") || args.contains("--help") {
     print("  -w             Whole-word matching (word boundaries required)")
     print("  -D <delim>     Delimiter for multiple search terms (default: |)")
     print("  -T <width>     Line thickness for outlines (default: 4)")
+    print("  -s             Also save the unannotated image that OCR searched, for debugging")
+    print("                 (preprocessed version when -e is set; screenshot mode only)")
     print("  -h             Print this help and exit")
     print("  -v             Print version and exit")
     exit(0)
@@ -806,8 +842,18 @@ if let idx = args.firstIndex(of: "-T") {
     args.removeSubrange(idx...idx + 1)
 }
 
+// Parse -s flag (save the unannotated image passed to OCR, for debugging)
+if let idx = args.firstIndex(of: "-s") {
+    saveSearched = true
+    args.remove(at: idx)
+}
+
 // Validate flag combinations
 if fileGlob != nil {
+    if saveSearched {
+        fputs("Error: -s is not supported in file glob mode\n", stderr)
+        exit(1)
+    }
     if outputPath != nil {
         fputs("Error: -o is not supported in file glob mode\n", stderr)
         exit(1)
@@ -893,15 +939,31 @@ if let glob = fileGlob {
 
     Task {
         do {
-            let displays = try await getDisplays(selection: monitorSelection)
+            let (displays, totalDisplays) = try await getDisplays(selection: monitorSelection)
             var listHeaderPrinted = false
+            var anyMatches = false
 
             for (displayIndex, display) in displays.enumerated() {
                 let screenshot = try await captureScreenshot(display: display)
                 let displayLabel = displays.count > 1 ? " (monitor \(displayIndex + 1))" : ""
                 print("Screenshot captured\(displayLabel) (\(screenshot.width)x\(screenshot.height))")
 
-                let matches = try findMatches(in: screenshot, searchTerms: searchTerms,
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyyMMdd.HHmmss"
+                let timestamp = formatter.string(from: Date())
+                let monitorSuffix = displays.count > 1 ? "--monitor\(displayIndex + 1)" : ""
+                let baseName = "screenshot--\(timestamp)\(monitorSuffix)"
+
+                let searchedImage = ocrInput(screenshot, enhanced: enhanced)
+
+                // Save before OCR so the image exists even when nothing matches
+                if saveSearched {
+                    let debugURL = resolveDebugOutputURL(outputPath: outputPath, defaultFilename: "\(baseName)--searched.png")
+                    let savedDebugURL = try savePNG(searchedImage, to: debugURL)
+                    print("Saved searched image: \(savedDebugURL.path)")
+                }
+
+                let matches = try findMatches(in: searchedImage, searchTerms: searchTerms,
                                               enhanced: enhanced, maxDistance: maxDistance,
                                               wholeWord: wholeWord)
 
@@ -910,6 +972,7 @@ if let glob = fileGlob {
                     continue
                 }
 
+                anyMatches = true
                 print("Found \(matches.count) match\(matches.count == 1 ? "" : "es")\(displayLabel)")
 
                 if listOnly {
@@ -929,22 +992,19 @@ if let glob = fileGlob {
                     continue
                 }
 
-                let formatter = DateFormatter()
-                formatter.dateFormat = "yyyyMMdd.HHmmss"
-                let timestamp = formatter.string(from: Date())
-                let filename: String
-                if displays.count > 1 {
-                    filename = "screenshot--\(timestamp)--monitor\(displayIndex + 1).png"
-                } else {
-                    filename = "screenshot--\(timestamp).png"
-                }
-
-                let url = resolveOutputURL(outputPath: outputPath, defaultFilename: filename)
+                let url = resolveOutputURL(outputPath: outputPath, defaultFilename: "\(baseName).png")
                 let savedURL = try savePNG(annotated, to: url)
                 print("Saved: \(savedURL.path)")
 
                 if !noOpen {
                     openInPreview(savedURL)
+                }
+            }
+
+            if !anyMatches {
+                fflush(stdout)  // keep hints after stdout output when piped
+                for hint in noMatchHints(monitorSelection: monitorSelection, totalDisplays: totalDisplays, savedSearched: saveSearched) {
+                    fputs("\(hint)\n", stderr)
                 }
             }
         } catch {

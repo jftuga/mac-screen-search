@@ -57,7 +57,7 @@ swiftc -o mac-screen-search mac-screen-search.swift
 ```
 mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-T <width>]
                   [-n] [-o <path>] [-m <n|all>] [-M] [-l] [-t <secs>] [-w]
-                  [-D <delim>] [-v] <search-term> [-f <glob>]
+                  [-D <delim>] [-s] [-v] <search-term> [-f <glob>]
 ```
 
 ### Options
@@ -79,6 +79,7 @@ mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-T <width>]
 | `-w` | Whole-word matching (require word boundaries on both sides of the match) |
 | `-D <delim>` | Delimiter for multiple search terms (default: `\|`). The search-term argument is split on this delimiter; each piece is searched independently and all matches are merged |
 | `-T <width>` | Line thickness for outline rectangles (default: `4`). Accepts any positive number |
+| `-s` | Also save the unannotated image that OCR searched, for debugging (preprocessed version when `-e` is set). Screenshot mode only |
 | `-h` | Print help and exit |
 | `-v` | Print version and exit |
 
@@ -226,6 +227,25 @@ mac-screen-search -D "," "password,secret,api-key"
 
 Since the shell interprets `|` as a pipe, the search-term argument must be quoted.
 
+### Debugging missed matches
+
+When nothing matches in screenshot mode, hints are printed to stderr. If more than one monitor is connected and `-m all` was not used, the hint names the monitor that was searched and suggests `-m`, since the text may be on another screen:
+
+```
+No matches found for "password"
+Hint: searched monitor 1 of 3; use -m <n> or -m all if the text is on another screen.
+Hint: use -s to save the searched image and see what OCR actually saw.
+```
+
+When a term is not found but should be, use `-s` to save the exact image that was passed to OCR, so you can inspect what was actually searched:
+
+```sh
+mac-screen-search -s "password"
+mac-screen-search -s -e "password"    # saves the preprocessed (enhanced) image
+```
+
+The image is saved as `screenshot--<timestamp>--searched.png` (with `--monitorN` before `--searched` when multiple monitors are captured), in the same directory as the annotated output (`-o` is honored; if `-o` names a file, its parent directory is used). It is written before OCR runs, so it is saved whether or not any matches are found, and it is never opened in Preview. Not supported in file glob mode.
+
 ### File glob mode
 
 Process existing image files instead of capturing a screenshot. The glob is expanded by the tool itself (not the shell), so quote the pattern:
@@ -301,7 +321,7 @@ Processing 4 files matching "*.png" for "api-key"
 2. **OCR** -- Runs Apple Vision's `VNRecognizeTextRequest` with accurate recognition and language correction. With `-e`, the image is preprocessed first and multiple candidates are evaluated
 3. **Search** -- Finds all case-insensitive occurrences of each search term (split by `-D` delimiter, default `|`), mapping each to pixel-coordinate bounding boxes. With `-d`, uses Levenshtein distance for fuzzy matching. With `-w`, requires word boundaries
 4. **Annotate** -- Draws colored outline rectangles (or solid fill with `-r`, or Gaussian blur with `-b`) around each match, using the color specified by `-c` (default: red). Skipped in list mode (`-l`)
-5. **Output** -- Saves the result as a timestamped PNG and opens it in Preview (screenshot mode), or overwrites files in-place preserving mtime (file mode). Use `-o` to set the output path and `-n` to skip Preview
+5. **Output** -- Saves the result as a timestamped PNG and opens it in Preview (screenshot mode), or overwrites files in-place preserving mtime (file mode). Use `-o` to set the output path and `-n` to skip Preview. Use `-s` to also save the unannotated image that OCR searched
 
 ## Personal Project Disclosure
 
