@@ -57,12 +57,22 @@ func getDisplays(selection: String?) async throws -> (selected: [SCDisplay], tot
     return ([allDisplays[index - 1]], allDisplays.count)
 }
 
-/// Capture a screenshot of the given display at Retina resolution.
+/// Return the native pixel dimensions of a display using its actual point-to-pixel
+/// scale (e.g. 2 on Retina, 1 on standard displays) instead of assuming Retina.
+func nativePixelSize(of display: SCDisplay) -> (width: Int, height: Int) {
+    let filter = SCContentFilter(display: display, excludingWindows: [])
+    let scale = Double(SCShareableContent.info(for: filter).pointPixelScale)
+    return (Int((Double(display.width) * scale).rounded()),
+            Int((Double(display.height) * scale).rounded()))
+}
+
+/// Capture a screenshot of the given display at its native pixel resolution.
 func captureScreenshot(display: SCDisplay) async throws -> CGImage {
     let filter = SCContentFilter(display: display, excludingWindows: [])
+    let size = nativePixelSize(of: display)
     let config = SCStreamConfiguration()
-    config.width = display.width * 2  // Retina
-    config.height = display.height * 2
+    config.width = size.width
+    config.height = size.height
     config.showsCursor = false
 
     return try await SCScreenshotManager.captureImage(
@@ -618,7 +628,7 @@ func processFiles(_ files: [URL], searchTerms: [String], redact: Bool, blurPerce
 // MARK: - Main
 
 let programName = "mac-screen-search"
-let programVersion = "v1.5.0"
+let programVersion = "v1.5.1"
 let programURL = "https://github.com/jftuga/mac-screen-search"
 
 var redact = false
@@ -685,7 +695,8 @@ if args.contains("-M") {
             } else {
                 var entries: [(index: Int, logical: String, pixel: String, displayID: UInt32)] = []
                 for (i, d) in displays.enumerated() {
-                    entries.append((i + 1, "\(d.width)x\(d.height)", "\(d.width * 2)x\(d.height * 2)", d.displayID))
+                    let px = nativePixelSize(of: d)
+                    entries.append((i + 1, "\(d.width)x\(d.height)", "\(px.width)x\(px.height)", d.displayID))
                 }
                 let maxLogical = entries.map { $0.logical.count }.max() ?? 0
                 let maxPixel = entries.map { $0.pixel.count }.max() ?? 0
