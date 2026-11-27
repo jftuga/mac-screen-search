@@ -100,12 +100,12 @@ When used with `-m all`, `-o` must point to a directory.
 Capture a specific monitor by its 1-based index, or all connected monitors:
 
 ```sh
-mac-screen-search -m 1 "password"      # primary monitor
+mac-screen-search -m 1 "password"      # first monitor (the default)
 mac-screen-search -m 2 "password"      # second monitor
 mac-screen-search -m all "password"    # all monitors (one file per display)
 ```
 
-Use `-M` to list connected monitors and their resolutions:
+Use `-M` to list connected monitors with their resolution (logical points and native pixels), display name, display ID, and current refresh rate in Hz:
 
 ```sh
 mac-screen-search -M
@@ -114,9 +114,12 @@ mac-screen-search -M
 Example output:
 
 ```
-Monitor 1: 1512x982  (3024x1964 px) [displayID: 1]
-Monitor 2: 2560x1440 (5120x2880 px) [displayID: 2]
+Monitor 1: 2560x1440 (2560x1440 px) LG ULTRAGEAR            [displayID: 3, refresh: 144]
+Monitor 2: 1920x1080 (3840x2160 px) DELL U2720Q             [displayID: 2, refresh: 60]
+Monitor 3: 1512x982  (3024x1964 px) Built-in Retina Display [displayID: 1, refresh: 60]
 ```
+
+Monitor 1 is not necessarily the built-in or main display; it is the display captured when `-m` is omitted. The display name is the one shown in System Settings. Refresh rate prints as `unknown` when the display does not report one.
 
 ## List mode
 
