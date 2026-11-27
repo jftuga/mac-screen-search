@@ -18,7 +18,7 @@
 //   - Configurable annotation color (-c) from a set of named colors
 //   - Configurable line thickness (-T) for outline rectangles
 //   - Monitor selection (-m) and listing (-M, with display name and refresh rate)
-//     for multi-display setups
+//     for multi-display setups; -m takes the monitor number shown by -M
 //   - List mode (-l): prints match text and coordinates as TSV on stdout without
 //     annotation (status messages go to stderr)
 //   - Multi-term search via configurable delimiter (-D, default: |)
@@ -774,7 +774,7 @@ if args.isEmpty || args.contains("-h") || args.contains("--help") {
     print("  -f <glob>      Process image files matching glob instead of capturing screen")
     print("  -n             Do not open the result in Preview (screenshot mode)")
     print("  -o <path>      Output directory or file path for the screenshot PNG")
-    print("  -m <n|all>     Capture monitor n (1-based) or all monitors")
+    print("  -m <n|all>     Capture monitor n (1-based, as numbered by -M) or all monitors")
     print("  -M             List connected monitors and exit")
     print("  -l             List matches (text and coordinates) without annotating")
     print("  -t <seconds>   Capture delay in seconds (default: 2; 0 for immediate)")
@@ -800,11 +800,11 @@ if args.contains("-M") {
             if displays.isEmpty {
                 fputs("No displays found\n", stderr)
             } else {
-                var entries: [(index: Int, logical: String, pixel: String, name: String, displayID: UInt32, refresh: String)] = []
+                var entries: [(index: Int, logical: String, pixel: String, name: String, refresh: String)] = []
                 for (i, d) in displays.enumerated() {
                     let px = nativePixelSize(of: d)
                     entries.append((i + 1, "\(d.width)x\(d.height)", "\(px.width)x\(px.height)",
-                                    names[d.displayID] ?? "Unknown", d.displayID, refreshRateDescription(of: d.displayID)))
+                                    names[d.displayID] ?? "Unknown", refreshRateDescription(of: d.displayID)))
                 }
                 let maxLogical = entries.map { $0.logical.count }.max() ?? 0
                 let maxPixel = entries.map { $0.pixel.count }.max() ?? 0
@@ -813,7 +813,7 @@ if args.contains("-M") {
                     let logPad = padRight(e.logical, to: maxLogical)
                     let pxPad = padRight(e.pixel, to: maxPixel)
                     let namePad = padRight(e.name, to: maxName)
-                    print("Monitor \(e.index): \(logPad) (\(pxPad) px) \(namePad) [displayID: \(e.displayID), refresh: \(e.refresh)]")
+                    print("Monitor \(e.index): \(logPad) pt (\(pxPad) px) \(namePad) [refresh: \(e.refresh)]")
                 }
             }
         } catch {
