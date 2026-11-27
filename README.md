@@ -1,12 +1,20 @@
 # mac-screen-search
 
-[Intro](#intro) | [Installation](#installation) | [Quick start](#quick-start) | [Screenshots](#screenshots) | [Documentation](#documentation) | [Disclosure](#personal-project-disclosure)
+[Intro](#intro) | [Screenshots](#screenshots) | [Installation](#installation) | [Quick start](#quick-start) | [Documentation](#documentation) | [Disclosure](#personal-project-disclosure)
 
 ## Intro
 
 A macOS command-line tool that finds text on screen using OCR and opens an annotated screenshot in Preview. It can also redact or blur matches in screenshots and batches of existing images.
 
 AI disclaimer: Built with Claude Opus 4.6; use at your own risk and verify redactions before sharing sensitive screenshots ([full disclaimer](docs/disclaimer.md)).
+
+## Screenshots
+
+| ![screenshot mode](screenshot.jpg) | ![redact mode](redact.jpg) |
+|:---:|:---:|
+| screenshot mode | redact mode |
+| ![park](park.jpg) | ![dollar](dollar.jpg) |
+| park | dollar |
 
 ## Installation
 
@@ -28,14 +36,6 @@ mac-screen-search "password|secret|api-key"   # search multiple terms
 ```
 
 Screen capture starts after a 2-second delay; use `-t 0` for immediate capture. Run `mac-screen-search -h` for help, or see the [options and examples](docs/usage.md).
-
-## Screenshots
-
-| ![screenshot mode](screenshot.jpg) | ![redact mode](redact.jpg) |
-|:---:|:---:|
-| screenshot mode | redact mode |
-| ![park](park.jpg) | ![dollar](dollar.jpg) |
-| park | dollar |
 
 ## Documentation
 
