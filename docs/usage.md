@@ -22,7 +22,7 @@ mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-T <width>]
 | `-f <glob>` | Process image files matching the glob pattern instead of capturing the screen |
 | `-n` | Do not open the result in Preview (screenshot mode only) |
 | `-o <path>` | Output directory or file path for the screenshot PNG (screenshot mode only) |
-| `-m <n\|all>` | Capture monitor `n` (1-based) or `all` monitors (screenshot mode only) |
+| `-m <n\|all>` | Capture monitor `n` (1-based, as numbered by `-M`) or `all` monitors (screenshot mode only) |
 | `-M` | List connected monitors and exit |
 | `-l` | List matches (text and coordinates) without annotating; incompatible with `-r`/`-b` |
 | `-t <seconds>` | Capture delay in seconds (default: 2; use 0 for immediate). Screenshot mode only |
@@ -105,7 +105,7 @@ mac-screen-search -m 2 "password"      # second monitor
 mac-screen-search -m all "password"    # all monitors (one file per display)
 ```
 
-Use `-M` to list connected monitors with their resolution (logical points and native pixels), display name, display ID, and current refresh rate in Hz:
+Use `-M` to list connected monitors with their size in points and pixels, display name, and current refresh rate in Hz:
 
 ```sh
 mac-screen-search -M
@@ -114,12 +114,14 @@ mac-screen-search -M
 Example output:
 
 ```
-Monitor 1: 2560x1440 (2560x1440 px) LG ULTRAGEAR            [displayID: 3, refresh: 144]
-Monitor 2: 1920x1080 (3840x2160 px) DELL U2720Q             [displayID: 2, refresh: 60]
-Monitor 3: 1512x982  (3024x1964 px) Built-in Retina Display [displayID: 1, refresh: 60]
+Monitor 1: 2560x1440 pt (2560x1440 px) LG ULTRAGEAR            [refresh: 144]
+Monitor 2: 1920x1080 pt (3840x2160 px) DELL U2720Q             [refresh: 60]
+Monitor 3: 1512x982  pt (3024x1964 px) Built-in Retina Display [refresh: 60]
 ```
 
-Monitor 1 is not necessarily the built-in or main display; it is the display captured when `-m` is omitted. The display name is the one shown in System Settings. Refresh rate prints as `unknown` when the display does not report one.
+`pt` is the size in points, the "Looks like" setting in System Settings > Displays. `px` is the size in pixels of the screenshot that is captured and searched, and the space that `-l` coordinates are in. Retina displays usually render at 2x, so each point is 2x2 pixels; a display at 1x shows the same size for both. The `px` size is not necessarily the panel's physical resolution, because macOS resamples scaled modes to fit the panel.
+
+The number after `Monitor` is the value to pass to `-m`; with the output above, `-m 2` captures the DELL U2720Q. Monitor 1 is not necessarily the built-in or main display; it is the display captured when `-m` is omitted. The display name is the one shown in System Settings. Refresh rate prints as `unknown` when the display does not report one.
 
 ## List mode
 
