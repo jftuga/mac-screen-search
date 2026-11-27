@@ -30,7 +30,7 @@ See [installation](docs/installation.md) for upgrades, binary downloads, and bui
 ## Quick start
 
 ```sh
-mac-screen-search "password"                 # outline matches and open in Preview
+mac-screen-search "password"                  # outline matches and open in Preview
 mac-screen-search -r -c black "secret"        # redact matches
 mac-screen-search "password|secret|api-key"   # search multiple terms
 ```
