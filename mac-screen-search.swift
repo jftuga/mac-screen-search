@@ -81,22 +81,20 @@ func captureScreenshot(display: SCDisplay) async throws -> CGImage {
 
 // MARK: - Levenshtein Distance
 
-/// Compute the Levenshtein (edit) distance between two strings.
-func levenshteinDistance(_ s1: String, _ s2: String) -> Int {
-    let a = Array(s1.unicodeScalars)
-    let b = Array(s2.unicodeScalars)
-    let m = a.count
+/// Compute the Levenshtein (edit) distance between `pattern` and every prefix of
+/// `text` in a single dynamic-programming pass.  Element `j` of the result is the
+/// distance between `pattern` and the first `j` characters of `text`.
+func prefixEditDistances(_ pattern: [Character], _ text: ArraySlice<Character>) -> [Int] {
+    let b = Array(text)
     let n = b.count
-    if m == 0 { return n }
-    if n == 0 { return m }
 
     var prev = Array(0...n)
     var curr = Array(repeating: 0, count: n + 1)
 
-    for i in 1...m {
-        curr[0] = i
-        for j in 1...n {
-            if a[i-1] == b[j-1] {
+    for (i, ch) in pattern.enumerated() {
+        curr[0] = i + 1
+        for j in stride(from: 1, through: n, by: 1) {
+            if ch == b[j-1] {
                 curr[j] = prev[j-1]
             } else {
                 curr[j] = 1 + min(prev[j], curr[j-1], prev[j-1])
@@ -104,7 +102,68 @@ func levenshteinDistance(_ s1: String, _ s2: String) -> Int {
         }
         swap(&prev, &curr)
     }
-    return prev[n]
+    return prev
+}
+
+/// Find spans of `text` within `maxDistance` edits of `pattern`, returned as
+/// character-offset ranges in text order.  Substrings whose length is within
+/// `maxDistance` of the pattern's length are considered, so insertions and deletions
+/// match as well as substitutions.  Spans that begin or end with whitespace are
+/// skipped by policy; for patterns without internal whitespace this never loses a
+/// match, but a multi-word pattern can miss one whose outer word is absent at a
+/// span edge.  Overlaps are resolved with whitespace-delimited tokens as an
+/// approximation of Vision's word-level bounding boxes: candidates are ranked by
+/// distance, then by whether the span is aligned to word boundaries, then by length
+/// closest to the pattern, then by position.  A candidate is kept only if it shares
+/// no characters with an already-kept span and touches at least one token that no
+/// kept span touches.
+func fuzzyMatchSpans(in text: [Character], pattern: [Character], maxDistance: Int, wholeWord: Bool) -> [Range<Int>] {
+    let m = pattern.count
+    let n = text.count
+    let minLen = max(1, m - maxDistance)
+    let maxLen = m + maxDistance
+
+    // Index of the whitespace-delimited token containing each character (-1 for whitespace)
+    var wordIndex = Array(repeating: -1, count: n)
+    var word = -1
+    for i in 0..<n where !text[i].isWhitespace {
+        if i == 0 || text[i-1].isWhitespace { word += 1 }
+        wordIndex[i] = word
+    }
+
+    let isWord: (Character?) -> Bool = { c in guard let c = c else { return false }; return c.isLetter || c.isNumber || c == "_" }
+    var candidates: [(range: Range<Int>, distance: Int, misaligned: Int)] = []
+
+    for start in 0..<n where !text[start].isWhitespace {
+        let end = min(n, start + maxLen)
+        guard end - start >= minLen else { continue }
+        let distances = prefixEditDistances(pattern, text[start..<end])
+
+        for len in minLen...(end - start) where distances[len] <= maxDistance {
+            let range = start..<(start + len)
+            if text[range.upperBound - 1].isWhitespace { continue }
+            let before = start > 0 ? text[start - 1] : nil
+            let after = range.upperBound < n ? text[range.upperBound] : nil
+            let aligned = !isWord(before) && !isWord(after)
+            if wholeWord && !aligned { continue }
+            candidates.append((range, distances[len], aligned ? 0 : 1))
+        }
+    }
+
+    candidates.sort {
+        ($0.distance, $0.misaligned, abs($0.range.count - m), $0.range.lowerBound) <
+        ($1.distance, $1.misaligned, abs($1.range.count - m), $1.range.lowerBound)
+    }
+
+    var kept: [Range<Int>] = []
+    var claimedWords = Set<Int>()
+    for candidate in candidates {
+        let words = wordIndex[candidate.range.lowerBound]...wordIndex[candidate.range.upperBound - 1]
+        if kept.contains(where: { $0.overlaps(candidate.range) }) || words.allSatisfy(claimedWords.contains) { continue }
+        claimedWords.formUnion(words)
+        kept.append(candidate.range)
+    }
+    return kept.sorted { $0.lowerBound < $1.lowerBound }
 }
 
 // MARK: - Image Preprocessing
@@ -186,38 +245,24 @@ func findMatches(in image: CGImage, searchTerms: [String], enhanced: Bool = fals
                 let lowerFull = fullString.lowercased()
 
                 if let maxDist = maxDistance {
-                    let searchLen = lowerSearch.count
-                    let textLen = lowerFull.count
-                    guard textLen >= searchLen else { continue }
+                    let spans = fuzzyMatchSpans(in: Array(lowerFull), pattern: Array(lowerSearch),
+                                                maxDistance: maxDist, wholeWord: wholeWord)
 
-                    for winStart in 0...(textLen - searchLen) {
-                        let sIdx = lowerFull.index(lowerFull.startIndex, offsetBy: winStart)
-                        let eIdx = lowerFull.index(sIdx, offsetBy: searchLen)
-                        let window = String(lowerFull[sIdx..<eIdx])
+                    for span in spans {
+                        let origStart = fullString.index(fullString.startIndex, offsetBy: span.lowerBound)
+                        let origEnd = fullString.index(origStart, offsetBy: span.count)
+                        let originalRange = origStart..<origEnd
 
-                        if levenshteinDistance(window, lowerSearch) <= maxDist {
-                            if wholeWord {
-                                let before = winStart > 0 ? lowerFull[lowerFull.index(lowerFull.startIndex, offsetBy: winStart - 1)] : nil
-                                let after = winStart + searchLen < textLen ? lowerFull[lowerFull.index(lowerFull.startIndex, offsetBy: winStart + searchLen)] : nil
-                                let isWord: (Character?) -> Bool = { c in guard let c = c else { return false }; return c.isLetter || c.isNumber || c == "_" }
-                                if isWord(before) || isWord(after) { continue }
-                            }
-
-                            let origStart = fullString.index(fullString.startIndex, offsetBy: winStart)
-                            let origEnd = fullString.index(origStart, offsetBy: searchLen)
-                            let originalRange = origStart..<origEnd
-
-                            if let box = try? candidate.boundingBox(for: originalRange) {
-                                let normRect = box.boundingBox
-                                let pixelRect = CGRect(
-                                    x: normRect.origin.x * imageWidth,
-                                    y: (1.0 - normRect.origin.y - normRect.size.height) * imageHeight,
-                                    width: normRect.size.width * imageWidth,
-                                    height: normRect.size.height * imageHeight
-                                )
-                                matches.append(TextMatch(text: String(fullString[originalRange]), rect: pixelRect))
-                                observationMatched = true
-                            }
+                        if let box = try? candidate.boundingBox(for: originalRange) {
+                            let normRect = box.boundingBox
+                            let pixelRect = CGRect(
+                                x: normRect.origin.x * imageWidth,
+                                y: (1.0 - normRect.origin.y - normRect.size.height) * imageHeight,
+                                width: normRect.size.width * imageWidth,
+                                height: normRect.size.height * imageHeight
+                            )
+                            matches.append(TextMatch(text: String(fullString[originalRange]), rect: pixelRect))
+                            observationMatched = true
                         }
                     }
                 } else if wholeWord {
@@ -628,7 +673,7 @@ func processFiles(_ files: [URL], searchTerms: [String], redact: Bool, blurPerce
 // MARK: - Main
 
 let programName = "mac-screen-search"
-let programVersion = "v1.5.1"
+let programVersion = "v1.6.0"
 let programURL = "https://github.com/jftuga/mac-screen-search"
 
 var redact = false

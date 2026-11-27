@@ -281,14 +281,17 @@ mac-screen-search -e "password"
 
 ### Fuzzy matching mode
 
-Use `-d <dist>` to match strings within a Levenshtein (edit) distance of the search term. This catches OCR misreads where characters are substituted (e.g., `Z` read as `2`, `g` as `q`):
+Use `-d <dist>` to match strings within a Levenshtein (edit) distance of the search term. This catches OCR misreads where characters are substituted (e.g., `Z` read as `2`, `g` as `q`), dropped, or added:
 
 ```sh
 mac-screen-search -d 3 "rBZrS6gq7NsD"
 ```
 
-- Slides a window across each recognized text line and accepts any substring within the given edit distance
+- Checks substrings of each recognized text line whose length is within the given distance of the search term's length, and accepts any within the given edit distance. Substrings that begin or end with whitespace are skipped, so a multi-word search term can miss a match whose first or last word is missing entirely
 - A distance of 1 allows one character substitution, insertion, or deletion; higher values are more permissive
+- Overlapping candidates are reduced to one match per occurrence: the lowest distance wins, then a span aligned to word boundaries, then the length closest to the search term. A lower-ranked candidate is still kept if it shares no characters with a kept match and covers a whitespace-delimited token no kept match covers. Two occurrences inside one unbroken token are reported once
+- This consolidation also applies with `-d 0`: repeated exact occurrences within one whitespace-delimited token are reported once. Searching without `-d` retains the existing exact-match behavior
+- Common OCR merges and splits, such as `rn` read as `m`, cost 2 (a substitution plus an insertion or deletion)
 - Short search terms with high distance values may produce false positives; keep the ratio reasonable
 
 ### Combining flags
