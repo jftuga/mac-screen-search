@@ -17,7 +17,8 @@
 //   - Blur mode (-b): applies Gaussian blur to matched regions at a given intensity
 //   - Configurable annotation color (-c) from a set of named colors
 //   - Configurable line thickness (-T) for outline rectangles
-//   - Monitor selection (-m) and listing (-M) for multi-display setups
+//   - Monitor selection (-m) and listing (-M, with display name and refresh rate)
+//     for multi-display setups
 //   - List mode (-l): prints match text and coordinates as TSV on stdout without
 //     annotation (status messages go to stderr)
 //   - Multi-term search via configurable delimiter (-D, default: |)
@@ -66,6 +67,39 @@ func nativePixelSize(of display: SCDisplay) -> (width: Int, height: Int) {
     let scale = Double(SCShareableContent.info(for: filter).pointPixelScale)
     return (Int((Double(display.width) * scale).rounded()),
             Int((Double(display.height) * scale).rounded()))
+}
+
+/// Return the user-facing name of each connected display (e.g. "Built-in Retina
+/// Display", "DELL U2720Q"), keyed by display ID. SCDisplay has no name, so this
+/// reads NSScreen, whose NSScreenNumber matches SCDisplay.displayID. Must be called
+/// on the main thread.
+func displayNames() -> [CGDirectDisplayID: String] {
+    var names: [CGDirectDisplayID: String] = [:]
+    for screen in NSScreen.screens {
+        if let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
+            names[id] = screen.localizedName
+        }
+    }
+    return names
+}
+
+/// Return the current refresh rate of a display in Hz as a string: an integer for
+/// whole rates (e.g. "60"), two decimals otherwise (e.g. "59.94"), or "unknown" when
+/// the display mode does not report one.
+func refreshRateDescription(of displayID: CGDirectDisplayID) -> String {
+    guard let raw = CGDisplayCopyDisplayMode(displayID)?.refreshRate, raw > 0 else {
+        return "unknown"
+    }
+    // Round to two decimals first so a rate like 59.9999 prints as "60", not "60.00".
+    let rate = (raw * 100).rounded() / 100
+    return rate == rate.rounded() ? String(Int(rate)) : String(format: "%.2f", rate)
+}
+
+/// Pad a string with trailing spaces to the given width in characters. Unlike
+/// NSString's padding(toLength:), this never truncates and counts Characters rather
+/// than UTF-16 units, so names with accents or non-BMP characters stay intact.
+func padRight(_ text: String, to width: Int) -> String {
+    text + String(repeating: " ", count: max(0, width - text.count))
 }
 
 /// Capture a screenshot of the given display at its native pixel resolution.
@@ -699,7 +733,7 @@ func processFiles(_ files: [URL], searchTerms: [String], redact: Bool, blurPerce
 // MARK: - Main
 
 let programName = "mac-screen-search"
-let programVersion = "v1.7.0"
+let programVersion = "v1.8.0"
 let programURL = "https://github.com/jftuga/mac-screen-search"
 
 var redact = false
@@ -756,6 +790,8 @@ if args.isEmpty || args.contains("-h") || args.contains("--help") {
 
 // Parse -M flag (list monitors and exit)
 if args.contains("-M") {
+    // NSScreen must be read on the main thread, so collect names before the Task.
+    let names = displayNames()
     let semaphore = DispatchSemaphore(value: 0)
     Task {
         do {
@@ -764,17 +800,20 @@ if args.contains("-M") {
             if displays.isEmpty {
                 fputs("No displays found\n", stderr)
             } else {
-                var entries: [(index: Int, logical: String, pixel: String, displayID: UInt32)] = []
+                var entries: [(index: Int, logical: String, pixel: String, name: String, displayID: UInt32, refresh: String)] = []
                 for (i, d) in displays.enumerated() {
                     let px = nativePixelSize(of: d)
-                    entries.append((i + 1, "\(d.width)x\(d.height)", "\(px.width)x\(px.height)", d.displayID))
+                    entries.append((i + 1, "\(d.width)x\(d.height)", "\(px.width)x\(px.height)",
+                                    names[d.displayID] ?? "Unknown", d.displayID, refreshRateDescription(of: d.displayID)))
                 }
                 let maxLogical = entries.map { $0.logical.count }.max() ?? 0
                 let maxPixel = entries.map { $0.pixel.count }.max() ?? 0
+                let maxName = entries.map { $0.name.count }.max() ?? 0
                 for e in entries {
-                    let logPad = e.logical.padding(toLength: maxLogical, withPad: " ", startingAt: 0)
-                    let pxPad = e.pixel.padding(toLength: maxPixel, withPad: " ", startingAt: 0)
-                    print("Monitor \(e.index): \(logPad) (\(pxPad) px) [displayID: \(e.displayID)]")
+                    let logPad = padRight(e.logical, to: maxLogical)
+                    let pxPad = padRight(e.pixel, to: maxPixel)
+                    let namePad = padRight(e.name, to: maxName)
+                    print("Monitor \(e.index): \(logPad) (\(pxPad) px) \(namePad) [displayID: \(e.displayID), refresh: \(e.refresh)]")
                 }
             }
         } catch {
