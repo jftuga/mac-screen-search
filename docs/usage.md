@@ -1,6 +1,8 @@
 # Usage
 
-[← README](../README.md)
+[← Repository home](https://github.com/jftuga/mac-screen-search)
+
+**Quick links:** [Options](#options) | [Screenshot mode](#screenshot-mode-default) | [File glob mode](#file-glob-mode) | [Debugging](#debugging-missed-matches) | [Examples](#combining-flags)
 
 ```
 mac-screen-search [-r] [-b <pct>] [-e] [-d <dist>] [-c <color>] [-T <width>]

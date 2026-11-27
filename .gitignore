@@ -64,4 +64,5 @@ fastlane/test_output
 # local exclusions
 .??*~
 mac-screen-search
+PR.md
 

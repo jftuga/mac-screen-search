@@ -1,6 +1,6 @@
 # Installation
 
-[← README](../README.md)
+[← Repository home](https://github.com/jftuga/mac-screen-search)
 
 ## Requirements
 
