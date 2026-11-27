@@ -1,6 +1,6 @@
 # How it works
 
-[← README](../README.md)
+[← Repository home](https://github.com/jftuga/mac-screen-search)
 
 1. **Capture** -- Takes a screenshot at the display's native pixel resolution (2x on Retina, 1x on standard displays) via ScreenCaptureKit (or loads image files in `-f` mode). Supports selecting a specific monitor (`-m`) and configurable delay (`-t`)
 2. **OCR** -- Runs Apple Vision's `VNRecognizeTextRequest` with accurate recognition and language correction. With `-e`, the image is preprocessed first and multiple candidates are evaluated
