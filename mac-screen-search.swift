@@ -18,7 +18,8 @@
 //   - Configurable annotation color (-c) from a set of named colors
 //   - Configurable line thickness (-T) for outline rectangles
 //   - Monitor selection (-m) and listing (-M) for multi-display setups
-//   - List mode (-l): prints match text and coordinates without annotation
+//   - List mode (-l): prints match text and coordinates as TSV on stdout without
+//     annotation (status messages go to stderr)
 //   - Multi-term search via configurable delimiter (-D, default: |)
 //   - Output path control (-o), no-preview mode (-n), configurable delay (-t)
 //   - Debug save (-s): writes the exact unannotated image passed to OCR
@@ -32,9 +33,10 @@ import Vision
 
 // MARK: - Screenshot
 
-/// Return the displays to capture based on the monitor selection flag, along with
-/// the total number of connected displays.
-func getDisplays(selection: String?) async throws -> (selected: [SCDisplay], total: Int) {
+/// Return the displays to capture based on the monitor selection flag, each paired
+/// with its 1-based monitor number (as used by -m and -M), along with the total
+/// number of connected displays.
+func getDisplays(selection: String?) async throws -> (selected: [(number: Int, display: SCDisplay)], total: Int) {
     let content = try await SCShareableContent.current
     let allDisplays = content.displays
     guard !allDisplays.isEmpty else {
@@ -43,18 +45,18 @@ func getDisplays(selection: String?) async throws -> (selected: [SCDisplay], tot
     }
 
     guard let sel = selection else {
-        return ([allDisplays[0]], allDisplays.count)
+        return ([(1, allDisplays[0])], allDisplays.count)
     }
 
     if sel == "all" {
-        return (allDisplays, allDisplays.count)
+        return (allDisplays.enumerated().map { ($0.offset + 1, $0.element) }, allDisplays.count)
     }
 
     guard let index = Int(sel), index >= 1, index <= allDisplays.count else {
         throw NSError(domain: "mac-screen-search", code: 1,
                       userInfo: [NSLocalizedDescriptionKey: "Monitor index \(sel) out of range (1-\(allDisplays.count) available)"])
     }
-    return ([allDisplays[index - 1]], allDisplays.count)
+    return ([(index, allDisplays[index - 1])], allDisplays.count)
 }
 
 /// Return the native pixel dimensions of a display using its actual point-to-pixel
@@ -554,6 +556,29 @@ func eventCallback(
 }
 */
 
+// MARK: - Output
+
+/// Print a progress/status message.  In list mode (-l) it goes to stderr so that
+/// stdout carries only the tab-separated match data.
+func printStatus(_ message: String, listOnly: Bool) {
+    if listOnly {
+        fputs("\(message)\n", stderr)
+    } else {
+        print(message)
+    }
+}
+
+/// Format a match as tab-separated `text, x, y, width, height` with each
+/// coordinate rounded to the nearest pixel.
+func matchFields(_ match: TextMatch) -> String {
+    let r = match.rect
+    let values = [r.origin.x, r.origin.y, r.width, r.height].map { String(Int($0.rounded())) }
+    return ([match.text] + values).joined(separator: "\t")
+}
+
+/// Column names matching `matchFields`, for the list-mode header row.
+let matchFieldsHeader = "text\tx\ty\twidth\theight"
+
 // MARK: - Hints
 
 /// Build hints for a screenshot-mode search that found nothing: suggest -m when
@@ -628,11 +653,11 @@ func processFiles(_ files: [URL], searchTerms: [String], redact: Bool, blurPerce
 
         if listOnly {
             if !listHeaderPrinted {
-                print("file\ttext\tx\ty\twidth\theight")
+                print("file\t\(matchFieldsHeader)")
                 listHeaderPrinted = true
             }
             for match in matches {
-                print("\(path)\t\(match.text)\t\(Int(match.rect.origin.x))\t\(Int(match.rect.origin.y))\t\(Int(match.rect.width))\t\(Int(match.rect.height))")
+                print("\(path)\t\(matchFields(match))")
             }
             updatedCount += 1
             continue
@@ -666,14 +691,15 @@ func processFiles(_ files: [URL], searchTerms: [String], redact: Bool, blurPerce
         updatedCount += 1
     }
 
-    print("\n\(updatedCount) file\(updatedCount == 1 ? "" : "s") updated, \(errorCount) error\(errorCount == 1 ? "" : "s")")
+    let verb = listOnly ? "matched" : "updated"
+    printStatus("\n\(updatedCount) file\(updatedCount == 1 ? "" : "s") \(verb), \(errorCount) error\(errorCount == 1 ? "" : "s")", listOnly: listOnly)
     return errorCount > 0 ? 1 : 0
 }
 
 // MARK: - Main
 
 let programName = "mac-screen-search"
-let programVersion = "v1.6.0"
+let programVersion = "v1.7.0"
 let programURL = "https://github.com/jftuga/mac-screen-search"
 
 var redact = false
@@ -976,17 +1002,17 @@ if let glob = fileGlob {
         fputs("No files matched: \(glob)\n", stderr)
         exit(1)
     }
-    print("Processing \(files.count) file\(files.count == 1 ? "" : "s") matching \"\(glob)\" for \(termsDisplay)")
+    printStatus("Processing \(files.count) file\(files.count == 1 ? "" : "s") matching \"\(glob)\" for \(termsDisplay)", listOnly: listOnly)
     let code = processFiles(files, searchTerms: searchTerms, redact: redact, blurPercent: blurPercent,
                             enhanced: enhanced, maxDistance: maxDistance, wholeWord: wholeWord,
                             listOnly: listOnly, color: annotationColor)
     exit(code)
 } else {
     // Screenshot mode
-    print("Searching for: \(termsDisplay)")
+    printStatus("Searching for: \(termsDisplay)", listOnly: listOnly)
     if captureDelay > 0 {
         let delayStr = captureDelay == Double(Int(captureDelay)) ? String(Int(captureDelay)) : String(captureDelay)
-        print("Capturing screen in \(delayStr) second\(captureDelay == 1.0 ? "" : "s")...")
+        printStatus("Capturing screen in \(delayStr) second\(captureDelay == 1.0 ? "" : "s")...", listOnly: listOnly)
         Thread.sleep(forTimeInterval: captureDelay)
     }
 
@@ -999,15 +1025,15 @@ if let glob = fileGlob {
             var listHeaderPrinted = false
             var anyMatches = false
 
-            for (displayIndex, display) in displays.enumerated() {
+            for (monitorNumber, display) in displays {
                 let screenshot = try await captureScreenshot(display: display)
-                let displayLabel = displays.count > 1 ? " (monitor \(displayIndex + 1))" : ""
-                print("Screenshot captured\(displayLabel) (\(screenshot.width)x\(screenshot.height))")
+                let displayLabel = displays.count > 1 ? " (monitor \(monitorNumber))" : ""
+                printStatus("Screenshot captured\(displayLabel) (\(screenshot.width)x\(screenshot.height))", listOnly: listOnly)
 
                 let formatter = DateFormatter()
                 formatter.dateFormat = "yyyyMMdd.HHmmss"
                 let timestamp = formatter.string(from: Date())
-                let monitorSuffix = displays.count > 1 ? "--monitor\(displayIndex + 1)" : ""
+                let monitorSuffix = displays.count > 1 ? "--monitor\(monitorNumber)" : ""
                 let baseName = "screenshot--\(timestamp)\(monitorSuffix)"
 
                 let searchedImage = ocrInput(screenshot, enhanced: enhanced)
@@ -1016,7 +1042,7 @@ if let glob = fileGlob {
                 if saveSearched {
                     let debugURL = resolveDebugOutputURL(outputPath: outputPath, defaultFilename: "\(baseName)--searched.png")
                     let savedDebugURL = try savePNG(searchedImage, to: debugURL)
-                    print("Saved searched image: \(savedDebugURL.path)")
+                    printStatus("Saved searched image: \(savedDebugURL.path)", listOnly: listOnly)
                 }
 
                 let matches = try findMatches(in: searchedImage, searchTerms: searchTerms,
@@ -1024,20 +1050,20 @@ if let glob = fileGlob {
                                               wholeWord: wholeWord)
 
                 if matches.isEmpty {
-                    print("No matches found for \(termsDisplay)\(displayLabel)")
+                    printStatus("No matches found for \(termsDisplay)\(displayLabel)", listOnly: listOnly)
                     continue
                 }
 
                 anyMatches = true
-                print("Found \(matches.count) match\(matches.count == 1 ? "" : "es")\(displayLabel)")
+                printStatus("Found \(matches.count) match\(matches.count == 1 ? "" : "es")\(displayLabel)", listOnly: listOnly)
 
                 if listOnly {
                     if !listHeaderPrinted {
-                        print("text\tx\ty\twidth\theight")
+                        print("monitor\t\(matchFieldsHeader)")
                         listHeaderPrinted = true
                     }
                     for match in matches {
-                        print("\(match.text)\t\(Int(match.rect.origin.x))\t\(Int(match.rect.origin.y))\t\(Int(match.rect.width))\t\(Int(match.rect.height))")
+                        print("\(monitorNumber)\t\(matchFields(match))")
                     }
                     continue
                 }
