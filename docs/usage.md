@@ -120,30 +120,28 @@ Monitor 2: 2560x1440 (5120x2880 px) [displayID: 2]
 
 ## List mode
 
-Print match text and pixel coordinates without annotating or saving an image. Output is tab-separated with a header row:
+Print match text and pixel coordinates without annotating or saving an image. Matches are written to stdout as tab-separated values with a header row. Status messages (`Searching for:`, `Found N matches`, etc.) go to stderr, so stdout can be piped directly into other tools. Coordinates are rounded to the nearest pixel.
+
+In screenshot mode, the first column is the 1-based monitor number (as used by `-m` and shown by `-M`). Coordinates are relative to that monitor's screenshot:
 
 ```sh
-mac-screen-search -t 0 -l "test"
+mac-screen-search -t 0 -l "test" 2>/dev/null
 ```
 
 ```
-Searching for: "test"
-Screenshot captured (2940x1912)
-Found 3 matches
-text    x       y       width   height
-test    1766    183     92      42
-test    1060    1544    136     35
-test    331     1591    143     38
+monitor text    x       y       width   height
+1       test    1766    183     92      42
+1       test    1060    1544    136     35
+1       test    331     1591    143     38
 ```
 
-In file glob mode, a `file` column is prepended:
+In file glob mode, the first column is the file path instead:
 
 ```sh
-mac-screen-search -l "test" -f '*.png'
+mac-screen-search -l "test" -f '*.png' 2>/dev/null
 ```
 
 ```
-Processing 2 files matching "*.png" for "test"
 file    text    x       y       width   height
 /Users/john/Screenshots/a.png   test    1089    273     149     34
 /Users/john/Screenshots/b.png   test    323     315     151     41
